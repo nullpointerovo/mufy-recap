@@ -1,9 +1,10 @@
 // ==UserScript==
-// @name         Mufy 年度报告与单点查询
+// @name         Mufy Recap
 // @namespace    http://tampermonkey.net/
-// @version      25.8
-// @description  不知道改成什么 一切问题请在xhs nullpointer找我
+// @version      26.0
+// @description  mufy角色轮数以及作者轮数查询与排行
 // @author       Nullpointer与Deepseek
+// @license      MIT
 // @match        https://*.mufy.ai/*
 // @grant        none
 // @run-at       document-start
@@ -351,81 +352,100 @@
             if (commentId && seenCommentIds.has(String(commentId))) return;
             if (commentId) seenCommentIds.add(String(commentId));
 
-            const commenterId = pick(comment, 'commentatorId', 'userId', 'authorId', 'creatorId', 'commentator.id', 'commentator.userId', 'user.id', 'author.id', 'creator.id');
-
+            const commenterId = pick(comment, 'commentatorId', 'userId', 'authorId',
+                'commentator.id', 'user.id', 'author.id');
             if (!isSameId(commenterId, myUserId)) return;
+
             hasCommented = true;
             const value = Number(pick(comment, 'interactionRounds', 'rounds') || 0);
             if (Number.isFinite(value) && value > myRounds) myRounds = value;
         };
 
-        try {
-            const url = `${API_BASE}/api/comments/list`;
-            const payload = { characterId, sortBy: "latest", pageNum: 1, pageSize: 10 };
-            const res = await mufyPost(url, payload, 1);
-
-            if (res?.code === 200 && Array.isArray(res?.data?.data)) {
-                const comments = res.data.data;
-                walkCommentTree(comments, processComment);
-
-                if (myRounds > 0) return { rounds: myRounds, hasCommented: true, isExpired: false };
-
-                if (hasCommented) {
-                    const target = comments.find(c => isSameId(pick(c, 'commentatorId', 'userId'), myUserId));
-                    if (target && target.replyCount > 0) {
-                        const rUrl = `${API_BASE}/api/comments/list?parentId=${target.id}&pageNum=1&pageSize=50`;
-                        const rRes = await mufyGet(rUrl, 1);
-                        if (rRes && rRes.data) {
-                            const rList = Array.isArray(rRes.data) ? rRes.data : (rRes.data.data || []);
-                            walkCommentTree(rList, processComment);
-                            if (myRounds > 0) return { rounds: myRounds, hasCommented: true, isExpired: false };
-                        }
-                    }
+        const fetchMyReplies = async (parentComment) => {
+            if (!parentComment?.id) return;
+            try {
+                const rRes = await mufyGet(
+                    `${API_BASE}/api/comments/list?parentId=${parentComment.id}&pageNum=1&pageSize=50`, 1
+                );
+                if (rRes?.data) {
+                    const rList = Array.isArray(rRes.data) ? rRes.data : (rRes.data.data || []);
+                    walkCommentTree(rList, processComment);
                 }
-            } else {
-                isExpired = true;
-            }
-        } catch(e) {
-            if (e.isExpired) isExpired = true;
-        }
+            } catch (e) {}
+        };
 
+        const PAGE_SIZE = 20;
+
+        // 阶段1：时间排序（关键修复：latest → time）
         let page = 1;
         let hasNext = true;
-
-        while (hasNext && page <= 50 && !isExpired) {
-            const url = `${API_BASE}/api/comments/list`;
-            const payload = { characterId, sortBy: "heat", pageNum: page, pageSize: 10 };
-
+        while (hasNext && page <= 15 && !isExpired) {
             let res;
-            try { res = await mufyPost(url, payload); } catch (e) {
+            try {
+                res = await mufyPost(`${API_BASE}/api/comments/list`, {
+                    characterId, sortBy: "time", pageNum: page, pageSize: PAGE_SIZE
+                }, 1);
+            } catch (e) {
+                if (e.isExpired) isExpired = true;
+                break;
+            }
+
+            if (!res || res.code !== 200) break;
+
+            const comments = Array.isArray(res?.data?.data) ? res.data.data : [];
+            if (comments.length === 0) break;
+
+            walkCommentTree(comments, processComment);
+            if (myRounds > 0) return { rounds: myRounds, hasCommented: true, isExpired: false };
+
+            if (hasCommented) {
+                const mine = comments.find(c => isSameId(pick(c, 'commentatorId', 'userId'), myUserId));
+                if (mine) {
+                    await fetchMyReplies(mine);
+                    if (myRounds > 0) return { rounds: myRounds, hasCommented: true, isExpired: false };
+                }
+            }
+
+            const nextField = res?.data?.hasNext;
+            hasNext = nextField != null ? Boolean(nextField) : (comments.length >= PAGE_SIZE);
+            page++;
+            await sleep(180);
+        }
+
+        // 阶段2：heat 兜底（老评论）
+        page = 1;
+        hasNext = true;
+        while (hasNext && page <= 40 && !isExpired) {
+            let res;
+            try {
+                res = await mufyPost(`${API_BASE}/api/comments/list`, {
+                    characterId, sortBy: "heat", pageNum: page, pageSize: PAGE_SIZE
+                });
+            } catch (e) {
                 if (e.isExpired) isExpired = true;
                 break;
             }
 
             const comments = Array.isArray(res?.data?.data) ? res.data.data : [];
-            walkCommentTree(comments, processComment);
+            if (comments.length === 0) break;
 
+            walkCommentTree(comments, processComment);
             if (myRounds > 0) break;
 
-            if (hasCommented && myRounds === 0) {
-                const myComment = comments.find(c => isSameId(pick(c, 'commentatorId', 'userId'), myUserId));
-                if (myComment && myComment.replyCount > 0) {
-                    const rUrl = `${API_BASE}/api/comments/list?parentId=${myComment.id}&pageNum=1&pageSize=50`;
-                    try {
-                        const rRes = await mufyGet(rUrl);
-                        if (rRes && rRes.data) {
-                            const rList = Array.isArray(rRes.data) ? rRes.data : (rRes.data.data || []);
-                            walkCommentTree(rList, processComment);
-                            if (myRounds > 0) break;
-                        }
-                    } catch(e) {}
+            if (hasCommented) {
+                const mine = comments.find(c => isSameId(pick(c, 'commentatorId', 'userId'), myUserId));
+                if (mine) {
+                    await fetchMyReplies(mine);
+                    if (myRounds > 0) break;
                 }
             }
 
-            hasNext = Boolean(res?.data?.hasNext) && comments.length > 0;
+            const nextField = res?.data?.hasNext;
+            hasNext = nextField != null ? Boolean(nextField) : (comments.length >= PAGE_SIZE);
             page++;
             await sleep(200);
         }
+
         return { rounds: myRounds, hasCommented, isExpired };
     }
 
