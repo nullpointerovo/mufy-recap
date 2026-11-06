@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Mufy Recap
 // @namespace    http://tampermonkey.net/
-// @version      28.1
-// @description  你想到的想不到的这里可能有也可能没有
-// @author       Nullpointer与Deepseek与Chatgpt 排名分先后 哼哼
+// @version      28.2
+// @description  一个针对 Mufy（chat.mufy.ai）的功能增强脚本，集成了数据统计与多项自动化工具。
+// @author       Nullpointer与Deepseek
 // @license      MIT
 // @match        https://*.mufy.ai/*
 // @grant        none
 // @run-at       document-start
+// @downloadURL https://update.greasyfork.org/scripts/603672/Mufy%20Recap.user.js
+// @updateURL https://update.greasyfork.org/scripts/603672/Mufy%20Recap.meta.js
 // ==/UserScript==
 
 (function () {
@@ -17,8 +19,7 @@
     const API_BASE = 'https://chat.mufy.ai';
     const STORAGE_MY_ID_KEY = 'mufy_my_user_id_auto';
     const CACHE_DATA_KEY = 'mufy_annual_report_cache_v25';
-const MASK_LIBRARY_KEY = 'mufy_mask_library_v1';
-const TAG_RULES_KEY = 'mufy_tag_folder_rules_v1';
+    const MASK_LIBRARY_KEY = 'mufy_mask_library_v1';
     const MAX_RENDER_COUNT = 1000;
 
     let capturedAuth = '';
@@ -100,17 +101,13 @@ const TAG_RULES_KEY = 'mufy_tag_folder_rules_v1';
         } catch (_) {}
     })();
 
-        function getAuthorization() {
-        // ★ 修复：优先使用当前网页真实的 Token，防止被其他号的查询污染
+       function getAuthorization() {
+        // ★ 修复：过滤掉 null 或 undefined 的无效 Token
+        if (capturedAuth && capturedAuth !== 'Bearer null' && capturedAuth !== 'Bearer undefined') return capturedAuth;
         const local = localStorage.getItem('mufy-token') || localStorage.getItem('token') || localStorage.getItem('mufy_token');
-        if (local && local !== 'null' && local !== 'undefined') {
-            return /^Bearer\s+/i.test(local) ? local : `Bearer ${local}`;
-        }
-        if (capturedAuth && capturedAuth !== 'Bearer null' && capturedAuth !== 'Bearer undefined') {
-            return capturedAuth;
-        }
-        return '';
-}
+        return local ? (/^Bearer\s+/i.test(local) ? local : `Bearer ${local}`) : '';
+    }
+
     async function getMyUserId(onProgress) {
         let tokenId = '';
         const auth = getAuthorization();
@@ -249,21 +246,20 @@ const TAG_RULES_KEY = 'mufy_tag_folder_rules_v1';
         }
         return undefined;
     }
-const state = {
-    accounts: [],
-    loading: false, roles: [], authors: [], activeTab: 'role', myUserId: '',
-    searchQuery: '', searchParsed: null, isScanning: false, expandedAuthors: new Set(),
-    collectionLog: [], maskBindings: {}, collectionFilter: 'all', collectionMode: 'author', folderLog: [],
-    maskLibrary: { items: [] },
-    harvest: {
+
+        const state = {
+        accounts: [],
+        loading: false, roles: [], authors: [], activeTab: 'role', myUserId: '',
+        searchQuery: '', isScanning: false, expandedAuthors: new Set(),
+        collectionLog: [], maskBindings: {}, collectionFilter: 'all', folderLog: [],
+        maskLibrary: { items: [] },
+        harvest: {
             running: false,
             status: '准备就绪',
             current: 0,
             total: 0,
             successFollow: [],
-            successMsg: [],
-            lastStartIdx: 1,
-            lastEndIdx: 10
+            successMsg: []
         }
     };
     let masksCache = null, masksCacheTime = 0;
@@ -309,15 +305,14 @@ const state = {
                     const aId = pick(item, 'authorId', 'creatorId', 'userId', 'ownerId') || pick(charObj, 'authorId', 'creatorId', 'userId') || pick(authorObj, 'id', 'userId') || '';
                     const realFollowed = item.isFollowed != null ? Boolean(item.isFollowed) : isFollowed;
                     roleMap.set(cid, {
-    characterId: cid,
-    name: pick(item, 'name', 'characterName', 'title') || pick(charObj, 'name') || '未命名',
-    authorId: aId,
-    authorName: pick(item, 'authorName', 'creatorName') || pick(authorObj, 'name', 'username', 'nickname') || '',
-    avatarUrl: item.avatarUrl || '',
-    tags: Array.isArray(item.tags) ? item.tags : [],              // ★ 新增
-    rounds: 0, hasCommented: false, isScanning: false, hasScanned: false, isExpired: false,
-    isFollowed: realFollowed, lastSessionId: item.lastSessionId || null
-});
+                        characterId: cid,
+                        name: pick(item, 'name', 'characterName', 'title') || pick(charObj, 'name') || '未命名',
+                        authorId: aId,
+                        authorName: pick(item, 'authorName', 'creatorName') || pick(authorObj, 'name', 'username', 'nickname') || '',
+                        avatarUrl: item.avatarUrl || '',
+                        rounds: 0, hasCommented: false, isScanning: false, hasScanned: false, isExpired: false,
+                        isFollowed: realFollowed, lastSessionId: item.lastSessionId || null
+                    });
                 });
                 hasNext = Boolean(res?.data?.hasNext) && rows.length > 0;
                 page++;
@@ -959,109 +954,7 @@ const state = {
         setStatus(`整理完成：${successCount}/${total} 个作者成功`);
         return log;
     }
-async function removeCharactersFromFolder(folderId, characterIds) {
-    const ids = (Array.isArray(characterIds) ? characterIds : [characterIds]).filter(Boolean);
-    if (!ids.length) return { successCount: 0, total: 0, failedDetails: [] };
-    const BATCH = 20;
-    let successCount = 0;
-    const failedDetails = [];
-    for (let i = 0; i < ids.length; i += BATCH) {
-        const batch = ids.slice(i, i + BATCH);
-        try {
-            const res = await mufyPut(`${API_BASE}/api/favorites/characters`, {
-                folderId: Number(folderId),
-                removeCharacterIds: batch
-            }, 2);
-            if (res?.code === 200) successCount += batch.length;
-            else failedDetails.push({ batch, reason: res?.reason });
-        } catch (e) {
-            failedDetails.push({ batch, error: e.message });
-        }
-        await sleep(400);
-    }
-    return { successCount, total: ids.length, failedDetails };
-}
 
-async function clearFolderViaKnownRoles(folderId) {
-    const allCids = state.roles.map(r => r.characterId).filter(Boolean);
-    if (!allCids.length) return { successCount: 0, total: 0 };
-    return removeCharactersFromFolder(folderId, allCids);
-}
-
-async function organizeByTag(setStatus) {
-    const rules = parseTagRules(localStorage.getItem(TAG_RULES_KEY) || '');
-    if (!rules.length) { setStatus('请先填写标签规则', true); return; }
-    if (!state.roles.length) { setStatus('请先扫描', true); return; }
-
-    // 1. 补 tags，按规则分组（一个角色只进第一个命中的夹）
-    const groups = new Map();
-    const unmatched = [];
-    const conflicts = [];
-    for (let i = 0; i < state.roles.length; i++) {
-        const role = state.roles[i];
-        setStatus(`读取标签 ${i + 1}/${state.roles.length}：${role.name}`);
-        const tags = await ensureRoleTags(role);
-        const lower = tags.map(t => String(t).toLowerCase());
-        let matched = null;
-        for (const rule of rules) {
-            if (lower.some(t => rule.tags.has(t))) {
-                if (!matched) matched = rule;
-                else conflicts.push(`「${role.name}」同时命中「${matched.folder}」和「${rule.folder}」，归入前者`);
-            }
-        }
-        if (matched) {
-            if (!groups.has(matched.folder)) groups.set(matched.folder, { folderName: matched.folder, roles: [] });
-            groups.get(matched.folder).roles.push(role);
-        } else unmatched.push(role.name);
-        await sleep(300);
-    }
-
-    if (groups.size === 0) { setStatus('没有角色命中任何标签规则', true); return; }
-
-    // 2. 建夹（不存在才建）+ 加角色。不清空已有内容，清空交给「清空旧夹」按钮
-    setStatus('正在读取现有收藏夹...');
-    const folders = await fetchAllFavoriteFolders();
-    const folderByName = new Map(folders.map(f => [f.name, f]));
-
-    const log = [];
-    let idx = 0;
-    for (const [folderName, group] of groups) {
-        idx++;
-        setStatus(`整理中 ${idx}/${groups.size}：${folderName}`);
-        let folder = folderByName.get(folderName);
-        if (!folder) {
-            const newId = await createFavoriteFolder(folderName);
-            if (!newId) { log.push(`失败：${folderName} 创建收藏夹失败`); continue; }
-            folder = { id: newId, name: folderName };
-            folderByName.set(folderName, folder);
-            await sleep(800);
-        }
-        const cids = group.roles.map(r => r.characterId);
-        const result = await addCharactersToFolder(folder.id, cids);
-        if (result.successCount > 0) {
-            log.push(`成功：${folderName}，${result.successCount}/${result.total} 个角色${result.failedDetails.length ? `（${result.failedDetails.length} 失败）` : ''}`);
-            const coverRole = group.roles.find(r => r.avatarUrl);
-            if (coverRole) {
-                const okCover = await updateFolderCover(folder.id, coverRole.avatarUrl);
-                if (okCover) log[log.length - 1] += ' +封面';
-                await sleep(400);
-            }
-        } else {
-            const reason = result.failedDetails[0]?.reason || result.failedDetails[0]?.error || '未知';
-            log.push(`失败：${folderName} 全部失败（${reason}）`);
-        }
-        await sleep(300);
-    }
-
-    const successCount = log.filter(l => l.startsWith('成功')).length;
-    let summary = `按标签整理完成：${successCount}/${groups.size} 个夹`;
-    if (unmatched.length) summary += `\n未命中：${unmatched.length} 个角色`;
-    if (conflicts.length) summary += `\n多规则命中：\n${conflicts.join('\n')}`;
-    addFolderLog(`${summary}\n${log.join('\n')}`);
-    saveCache();
-    setStatus(`按标签整理完成：${successCount}/${groups.size} 个夹成功`);
-    return log;
-}
     function showFoldersDialog() {
         const overlay = document.createElement('div');
         overlay.className = 'mufy-mask-overlay';
@@ -1130,10 +1023,10 @@ async function organizeByTag(setStatus) {
 
         function renderList() {
             const items = state.maskLibrary.items;
-           if (!items.length) {
-    listEl.innerHTML = `<div class="mufy-mask-picker-empty">面具库是空的<br><small style="color:#666;">点「同步」导入官方槽位，或「新增」</small></div>`;
-    return;
-}
+            if (!items.length) {
+                listEl.innerHTML = `<div class="mufy-mask-picker-empty">面具库是空的<br><small style="color:#666;">点「同步」导入官方槽位，或「新增」</small></div>`;
+                return;
+            }
             const sorted = [...items].sort((a, b) => {
                 const aS = !!a.officialMaskId, bS = !!b.officialMaskId;
                 if (aS !== bS) return bS - aS;
@@ -1194,81 +1087,11 @@ async function organizeByTag(setStatus) {
             listEl.innerHTML = `<div class="mufy-mask-picker-empty">加载失败：${esc(e.message)}</div>`;
         }
     }
-function showClearFoldersDialog(onDone) {
-    const overlay = document.createElement('div');
-    overlay.className = 'mufy-mask-overlay';
-    overlay.innerHTML = `
-      <div class="mufy-mask-picker" style="width:420px;">
-        <div class="mufy-mask-picker-header">
-          <div class="mufy-mask-picker-title">清空收藏夹</div>
-          <button class="mufy-mask-picker-close">×</button>
-        </div>
-        <div style="padding:8px 16px;color:#ffb74d;font-size:11px;border-bottom:1px solid #222;">
-          只会移除「已扫描角色列表」里的角色；手动加的非扫描角色不受影响。
-        </div>
-        <div class="mufy-mask-picker-list" id="mufy-clear-list">
-          <div class="mufy-mask-picker-loading">加载中...</div>
-        </div>
-        <div style="padding:12px 16px;border-top:1px solid #222;display:flex;justify-content:flex-end;gap:8px;">
-          <button class="mufy-mask-tbtn" id="mufy-clear-cancel">取消</button>
-          <button class="mufy-mask-tbtn primary" id="mufy-clear-go">清空所选</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    const close = (v) => { overlay.remove(); onDone?.(v); };
-    overlay.querySelector('.mufy-mask-picker-close').addEventListener('click', () => close(false));
-    overlay.querySelector('#mufy-clear-cancel').addEventListener('click', () => close(false));
-    overlay.addEventListener('click', e => { if (e.target === overlay) close(false); });
 
-    const listEl = overlay.querySelector('#mufy-clear-list');
-    (async () => {
-        const folders = await fetchAllFavoriteFolders();
-        if (!folders.length) {
-            listEl.innerHTML = `<div class="mufy-mask-picker-empty">还没有收藏夹</div>`;
-            return;
-        }
-        listEl.innerHTML = folders.map(f => `
-          <label class="mufy-mask-picker-item" style="cursor:pointer;">
-            <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;">
-              <input type="checkbox" class="mufy-clear-cb" value="${f.id}">
-              <div style="min-width:0;">
-                <div class="mufy-mask-name">${esc(f.name)}</div>
-                <div class="mufy-mask-gender">${f.characterCnt || 0} 个角色</div>
-              </div>
-            </div>
-          </label>`).join('');
-    })();
-
-    overlay.querySelector('#mufy-clear-go').addEventListener('click', async (e) => {
-        const ids = [...overlay.querySelectorAll('.mufy-clear-cb:checked')].map(cb => cb.value);
-        if (!ids.length) return;
-        if (!confirm(`将清空 ${ids.length} 个夹中「已扫描角色列表」里的角色，继续？`)) return;
-        e.target.disabled = true; e.target.textContent = '清空中...';
-        let total = 0;
-        for (const id of ids) {
-            const r = await clearFolderViaKnownRoles(id);
-            total += r.successCount || 0;
-        }
-        addFolderLog(`清空了 ${ids.length} 个收藏夹（移除 ${total} 个角色）`);
-        close(true);
-    });
-}
     // ============ 收藏夹管理渲染 ============
     function renderCollection(contentEl) {
         const filter = state.collectionFilter || 'all';
         let filteredRoles = state.roles;
-if (state.searchQuery) {
-    const p = state.searchParsed || parseSearchToken(state.searchQuery);
-    const q = (p.q || p.raw || '').toLowerCase();
-    filteredRoles = filteredRoles.filter(r => {
-        if (p.type === 'id' || p.type === 'roleId') return isSameId(r.characterId, p.id);
-        if (p.type === 'authorId') return isSameId(r.authorId, p.id);
-        return String(r.name).toLowerCase().includes(q) ||
-               String(r.characterId).toLowerCase().includes(q) ||
-               String(r.authorName || '').toLowerCase().includes(q) ||
-               String(r.authorId || '').toLowerCase().includes(q);
-    });
-}
         if (filter === 'unfollowed') filteredRoles = filteredRoles.filter(r => !r.isFollowed);
         else if (filter === 'followed') filteredRoles = filteredRoles.filter(r => r.isFollowed);
 
@@ -1280,36 +1103,12 @@ if (state.searchQuery) {
         });
         const sortedGroups = [...groups.values()].sort((a, b) => b.roles.length - a.roles.length);
 
-       const mode = state.collectionMode || 'author';
-let html = '';
-
-// 模式切换
-html += `<div class="mufy-collection-filter" style="margin-bottom:8px;">
-    <button class="mufy-filter-btn ${mode === 'author' ? 'active' : ''}" data-mode="author">按作者整理</button>
-    <button class="mufy-filter-btn ${mode === 'tag' ? 'active' : ''}" data-mode="tag">按标签整理</button>
-</div>`;
-
-if (mode === 'author') {
-    html += `<div class="mufy-folder-actions">
-        <button class="mufy-folder-btn primary" id="mufy-organize-followed">整理已收藏</button>
-        <button class="mufy-folder-btn" id="mufy-organize-all">全部整理</button>
-        <button class="mufy-folder-btn" id="mufy-view-folders">查看收藏夹</button>
-        <button class="mufy-folder-btn" id="mufy-clean-dead" style="color:#ff5252; border-color:#5a1f1f;">一键清理死卡</button>
-    </div>`;
-} else {
-    const rulesRaw = localStorage.getItem(TAG_RULES_KEY) || '';
-    html += `<div style="margin-bottom:12px; padding:10px; background:#0a0a0a; border:1px solid #222; border-radius:8px;">
-        <div style="color:#888; font-size:11px; margin-bottom:6px;">标签规则（一行一个：夹名 = 标签1, 标签2）</div>
-        <textarea id="mufy-tag-rules" class="mufy-input" style="width:100%; height:90px; background:#000; border:1px solid #333; border-radius:4px; padding:8px; color:#fff; font-size:12px; box-sizing:border-box; resize:vertical; outline:none;" placeholder="不洁 = 不洁, NTR, 脏&#10;狗男 = 狗男, 忠犬, 舔狗">${esc(rulesRaw)}</textarea>
-        <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-            <button class="mufy-folder-btn primary" id="mufy-organize-tag">按标签整理</button>
+        let html = '';
+        html += `<div class="mufy-folder-actions">
+            <button class="mufy-folder-btn primary" id="mufy-organize-followed">整理已收藏</button>
+            <button class="mufy-folder-btn" id="mufy-organize-all">全部整理</button>
             <button class="mufy-folder-btn" id="mufy-view-folders">查看收藏夹</button>
-            <button class="mufy-folder-btn" id="mufy-clear-folders" style="color:#ffb74d; border-color:#5a3a1f;">清空旧夹</button>
-            <button class="mufy-folder-btn" id="mufy-clean-dead" style="color:#ff5252; border-color:#5a1f1f;">清理死卡</button>
-        </div>
-        <div style="color:#ffb74d; font-size:11px; margin-top:8px;">⚠️ 整理时只加不清。如果之前用作者模式整理过，建议先点「清空旧夹」，否则标签夹里会残留旧角色。</div>
-    </div>`;
-}
+        </div>`;
 
         const totalCount = state.roles.length;
         const unfollowedCount = state.roles.filter(r => !r.isFollowed).length;
@@ -1384,55 +1183,23 @@ if (mode === 'author') {
 
         contentEl.innerHTML = html;
     }
-
-    // ============ 主页收割 Tab 渲染（多来源 + 抓取区间）============
+    // ============ 主页收割 Tab 渲染 ============
     function renderHarvestTab(contentEl) {
         const h = state.harvest;
-        const startIdx = h.lastStartIdx || 1;
-        const endIdx = h.lastEndIdx || 10;
-        const count = endIdx >= startIdx ? (endIdx - startIdx + 1) : 0;
-
         let html = `
           <div style="padding: 10px; font-size: 13px; color: #aaa; line-height: 1.6;">
             <div style="font-size: 14px; color: #fff; margin-bottom: 8px;">主页收割机</div>
-            <div style="margin-bottom: 12px; color: #666;">按目标范围自动抓取角色，可批量收藏并发送打招呼消息。</div>
+            <div style="margin-bottom: 12px; color: #666;">自动翻页抓取主页推荐的角色，可批量收藏并发送打招呼消息。</div>
 
-            <div style="margin-bottom:12px; padding:12px; background:#111; border:1px solid #333; border-radius:6px; ${h.running ? 'display:none;' : ''}">
-                <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
-                    <span>抓取范围</span>
-                    第 <input type="number" id="mufy-harvest-start-idx" class="mufy-input" value="${startIdx}" min="1" style="width:65px; text-align:center; padding:4px; background:#0a0a0a; border:1px solid #333; border-radius:4px; color:#fff;">
-                    个 到 第 <input type="number" id="mufy-harvest-end-idx" class="mufy-input" value="${endIdx}" min="1" style="width:65px; text-align:center; padding:4px; background:#0a0a0a; border:1px solid #333; border-radius:4px; color:#fff;">
-                    个 <span style="color:#888;">(共 ${count} 张)</span>
-                </div>
-                <div style="display:flex; gap:14px; flex-wrap:wrap;">
-                    <label style="display:flex; align-items:center; gap:4px;">
-                        <input type="checkbox" id="mufy-harvest-unfollowed" checked> 仅抓未收藏
-                    </label>
-                </div>
-
-                <div style="margin-top:12px; padding-top:10px; border-top:1px dashed #333;">
-                    <div style="color:#aaa; margin-bottom:8px; font-size:12px;">抓取来源（可多选，按顺序抓，自动去重合并）：</div>
-                    <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                        <input type="checkbox" class="mufy-harvest-source" value="trending_all" checked> 趋势榜 · 全部
-                    </label>
-                    <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                        <input type="checkbox" class="mufy-harvest-source" value="trending_female"> 趋势榜 · 女性向
-                    </label>
-                    <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                        <input type="checkbox" class="mufy-harvest-source" value="trending_bg"> 趋势榜 · BG
-                    </label>
-                    <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                        <input type="checkbox" class="mufy-harvest-source" value="trending_custom"> 趋势榜 · 自定义标签
-                        <input type="text" id="mufy-harvest-custom-tags" class="mufy-input" placeholder="如: 纯爱, 病娇（逗号分隔）" style="flex:1; padding:4px 8px; background:#000; border:1px solid #333; border-radius:4px; color:#fff; font-size:12px;">
-                    </label>
-                    <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                        <input type="checkbox" class="mufy-harvest-source" value="star"> 关注榜（sortBy: star）
-                    </label>
-                    <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
-                        <input type="checkbox" class="mufy-harvest-source" value="author"> 作者主页所有角色
-                    </label>
-                    <input type="text" id="mufy-harvest-author-input" class="mufy-input" placeholder="作者主页链接或 creatorId（多个用逗号/空格分隔）" style="width:100%; box-sizing:border-box; padding:6px; background:#000; border:1px solid #333; border-radius:4px; color:#fff; margin-top:4px;">
-                </div>
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:12px; ${h.running ? 'display:none;' : ''}">
+                <span>从第</span>
+                <input type="number" id="mufy-harvest-start-page" class="mufy-input" value="1" style="width:50px; text-align:center; padding:4px; background:#0a0a0a; border:1px solid #333; border-radius:4px;">
+                <span>页 到 第</span>
+                <input type="number" id="mufy-harvest-end-page" class="mufy-input" value="3" style="width:50px; text-align:center; padding:4px; background:#0a0a0a; border:1px solid #333; border-radius:4px;">
+                <span>页</span>
+                <label style="margin-left:10px; display:flex; align-items:center; gap:4px;">
+                    <input type="checkbox" id="mufy-harvest-unfollowed" checked> 仅抓未收藏
+                </label>
             </div>
 
             <div style="margin-bottom:12px; padding:12px; background:#111; border:1px solid #333; border-radius:6px; ${h.running ? 'display:none;' : ''}">
@@ -1444,13 +1211,13 @@ if (mode === 'author') {
 
             <button class="mufy-btn" id="mufy-harvest-start" style="width: 100%; height: 40px; margin-bottom: 12px; background:#fff; color:#000; font-weight:600; ${h.running ? 'display:none;' : ''}">开始执行</button>
 
-            <div id="mufy-harvest-status" style="font-size:12px; color:${h.running ? '#fff' : '#888'}; margin-bottom:12px; font-weight:500; word-break:break-all;">${h.status}</div>
+            <div id="mufy-harvest-status" style="font-size:12px; color:${h.running ? '#fff' : '#888'}; margin-bottom:12px; font-weight:500;">${h.status}</div>
 
             <div id="mufy-harvest-result" style="background:#0a0a0a; border:1px solid #222; border-radius:8px; padding:12px; font-size:12px; max-height:300px; overflow-y:auto; display:${(h.successFollow.length || h.successMsg.length || h.running) ? 'block' : 'none'};">
                 <div style="font-weight:500; margin-bottom:8px; color:#fff;">执行记录：</div>
                 <div id="mufy-harvest-list" style="color:#888; line-height:1.6;">
-                    ${h.successFollow.map(name => `<div style="color:#ccc; margin-bottom:2px;">[收藏] ${esc(name)}</div>`).join('')}
-                    ${h.successMsg.map(name => `<div style="color:#ccc; margin-bottom:2px;">[打招呼] ${esc(name)}</div>`).join('')}
+                    ${h.successFollow.map(name => `<div style="color:#ccc; margin-bottom:2px;">[收藏] ${name}</div>`).join('')}
+                    ${h.successMsg.map(name => `<div style="color:#ccc; margin-bottom:2px;">[打招呼] ${name}</div>`).join('')}
                 </div>
             </div>
           </div>
@@ -1459,243 +1226,95 @@ if (mode === 'author') {
         bindHarvestEvents(contentEl);
     }
 
+    // ★ 新增：发消息函数（之前漏掉的）
     async function sendHelloToCharacter(characterId, msgText) {
         try {
             const sRes = await mufyPost(`${API_BASE}/api/sessions/create`, { characterId: characterId }, 1);
             let sessionId = '';
             if (sRes && sRes.code === 200 && sRes.data) {
-                if (typeof sRes.data === 'string') sessionId = sRes.data;
-                else sessionId = sRes.data.sessionId || sRes.data.id || sRes.data.data;
+                if (typeof sRes.data === 'string') {
+                    sessionId = sRes.data;
+                } else {
+                    sessionId = sRes.data.sessionId || sRes.data.id || sRes.data.data;
+                }
             }
-            if (!sessionId) return false;
+            if (!sessionId) {
+                console.warn('创建会话失败，无 sessionId', sRes);
+                return false;
+            }
 
-            const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*', 'Authorization': getAuthorization(), 'Origin': 'https://chat.mufy.ai', 'Referer': 'https://chat.mufy.ai/' };
+            const headers = {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json, text/plain, */*',
+                'Authorization': getAuthorization(),
+                'Origin': 'https://chat.mufy.ai',
+                'Referer': 'https://chat.mufy.ai/'
+            };
+
             const res = await fetch(`${API_BASE}/api/v1/chat/completions`, {
-                method: 'POST', headers,
-                body: JSON.stringify({ characterId: characterId, sessionId: sessionId, userInput: msgText, itemText: null, maskId: 7730987, modelId: 25, modelTemplateId: 67, skipRedPacket: false })
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    characterId: characterId,
+                    sessionId: sessionId,
+                    userInput: msgText,
+                    itemText: null,
+                    maskId: 7730987, // 默认面具 ID
+                    modelId: 25,
+                    modelTemplateId: 67,
+                    skipRedPacket: false
+                })
             });
 
             if (res.ok && res.body) {
+                // 完整读取流，确保入库
                 const reader = res.body.getReader();
-                while (true) { const { done } = await reader.read(); if (done) break; }
+                while (true) {
+                    const { done } = await reader.read();
+                    if (done) break;
+                }
                 return true;
             }
             return false;
-        } catch (e) { return false; }
-    }
-
-    // ============ 收割辅助函数 ============
-    const HARVEST_SOURCES = {
-        trending_all:    { type: 'rank', sortBy: 'trending', tags: [], label: '趋势榜·全部' },
-        trending_female: { type: 'rank', sortBy: 'trending', tags: ['女性向'], label: '趋势榜·女性向' },
-        trending_bg:     { type: 'rank', sortBy: 'trending', tags: ['BG'], label: '趋势榜·BG' },
-        trending_custom: { type: 'rank', sortBy: 'trending', tags: [], label: '趋势榜·自定义' },
-        star:            { type: 'rank', sortBy: 'star', tags: [], label: '关注榜' },
-        author:          { type: 'author', label: '作者主页' }
-    };
-
-    function parseAuthorIds(raw) {
-        if (!raw) return [];
-        const ids = new Set();
-        const parts = raw.split(/[\s,，;；]+/).filter(Boolean);
-        const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-        for (const part of parts) {
-            const m = part.match(uuidRegex);
-            if (m) { ids.add(m[0]); continue; }
-            try {
-                const u = new URL(part);
-                const id = u.searchParams.get('id') || u.searchParams.get('userId') || u.searchParams.get('creatorId');
-                if (id) { ids.add(id); continue; }
-            } catch (e) {}
-            if (part.length >= 16) ids.add(part);
-        }
-        return [...ids];
-    }
-const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-
-function parseSearchToken(raw) {
-  const input = String(raw || '').trim();
-  if (!input) return { type: 'empty' };
-
-  // 1) 直接 UUID
-  const m = input.match(UUID_RE);
-  if (m) return { type: 'id', id: m[0], raw: input };
-
-  // 2) URL 解析
-  try {
-    const u = new URL(input, location.origin);
-    const sp = u.searchParams;
-    if (sp.has('roleId'))      return { type: 'roleId', id: sp.get('roleId'), raw: input };
-    if (sp.has('sessionId'))   return { type: 'sessionId', id: sp.get('sessionId'), raw: input };
-    if (sp.has('shareCode'))   return { type: 'shareCode', id: sp.get('shareCode'), raw: input };
-    if (sp.has('creatorId'))   return { type: 'authorId', id: sp.get('creatorId'), raw: input };
-    if (sp.has('id')) {
-      // profile/role?id=  → 作者；其它 → 角色
-      if (/\/profile\//i.test(u.pathname)) return { type: 'authorId', id: sp.get('id'), raw: input };
-      return { type: 'id', id: sp.get('id'), raw: input };
-    }
-    if (/\/chat\//i.test(u.pathname) || /\/role\//i.test(u.pathname)) {
-      return { type: 'roleUrl', raw: input, url: u };
-    }
-  } catch (e) { /* 不是 URL，继续 */ }
-
-  // 3) 纯关键词
-  return { type: 'keyword', raw: input, q: input.toLowerCase() };
-}
-    async function harvestRankList(sortBy, tags, startIdx, endIdx, onlyUnfollowed, allChars, setStatus, label) {
-        const limitCount = endIdx - startIdx + 1;
-        let scannedCount = 0;
-        let page = 1;
-        const PAGE_SIZE = 16;
-        let emptyPages = 0;
-        const MAX_PAGES = 500;
-
-        while (allChars.size < limitCount && page <= MAX_PAGES && emptyPages < 3) {
-            setStatus(`${label} 第 ${page} 页（已收集 ${allChars.size}/${limitCount}）...`);
-            let res;
-            try {
-                res = await mufyPost(`${API_BASE}/api/characters/query`, {
-                    pageNum: page, pageSize: PAGE_SIZE, sortBy,
-                    genderText: '全性别', tags, showNsfw: false, search: ''
-                });
-            } catch (e) {
-                emptyPages++; page++; await sleep(800); continue;
-            }
-            const data = res?.data?.data;
-            if (!Array.isArray(data) || data.length === 0) {
-                emptyPages++; page++; await sleep(600); continue;
-            }
-            emptyPages = 0;
-
-            for (const c of data) {
-                if (allChars.size >= limitCount) break;
-                const cid = c.characterId || c.id;
-                if (!cid || allChars.has(cid)) continue;
-                if (onlyUnfollowed && c.isFollowed) continue;
-
-                scannedCount++;
-                if (scannedCount >= startIdx) {
-                    allChars.set(cid, {
-                        characterId: cid,
-                        name: c.name || c.characterName || c.title || '未命名',
-                        authorId: c.creatorId || c.authorId || c.userId || '',
-                        authorName: c.creatorName || c.authorName || '',
-                        isFollowed: Boolean(c.isFollowed)
-                    });
-                }
-            }
-
-            if (res?.data?.hasNext === false) break;
-            if (data.length < PAGE_SIZE) break;
-            page++;
-            await sleep(800);
+        } catch (e) {
+            console.warn('发消息失败', e);
+            return false;
         }
     }
-
-    async function harvestAuthorCharacters(authorIds, startIdx, endIdx, onlyUnfollowed, allChars, setStatus) {
-        const limitCount = endIdx - startIdx + 1;
-        let scannedCount = 0;
-        for (let i = 0; i < authorIds.length; i++) {
-            if (allChars.size >= limitCount) return;
-            const creatorId = authorIds[i];
-            setStatus(`抓取作者 ${i + 1}/${authorIds.length} (${creatorId.slice(0, 8)}...) 的角色...`);
-            try {
-                const res = await mufyGet(`${API_BASE}/api/characters/list?creatorId=${encodeURIComponent(creatorId)}`);
-                if (res?.code === 200 && Array.isArray(res.data) && res.data.length > 0) {
-                    for (const c of res.data) {
-                        if (allChars.size >= limitCount) break;
-                        const cid = c.characterId || c.id;
-                        if (!cid || allChars.has(cid)) continue;
-                        if (onlyUnfollowed && c.isFollowed) continue;
-
-                        scannedCount++;
-                        if (scannedCount >= startIdx) {
-                            allChars.set(cid, {
-                                characterId: cid,
-                                name: c.name || c.characterName || c.title || '未命名',
-                                authorId: c.creatorId || c.authorId || c.userId || '',
-                                authorName: c.creatorName || c.authorName || '',
-                                isFollowed: Boolean(c.isFollowed)
-                            });
-                        }
-                    }
-                }
-            } catch (e) {}
-            await sleep(600);
-        }
-    }
-
-function parseTagRules(raw) {
-    const rules = [];
-    String(raw || '').split('\n').forEach(line => {
-        line = line.trim();
-        if (!line || line.startsWith('#')) return;
-        const m = line.match(/^([^=:：]+)[=:：](.+)$/);
-        if (!m) return;
-        const folder = m[1].trim();
-        const tags = m[2].split(/[,，;；\s]+/).map(t => t.trim()).filter(Boolean);
-        if (folder && tags.length) rules.push({ folder, tags: new Set(tags.map(t => t.toLowerCase())) });
-    });
-    return rules;
-}
-
-async function ensureRoleTags(role) {
-    if (Array.isArray(role.tags) && role.tags.length) return role.tags;
-    try {
-        const res = await mufyGet(`${API_BASE}/api/characters/get?id=${encodeURIComponent(role.characterId)}`);
-        const d = res?.data?.data || res?.data || res;
-        if (Array.isArray(d?.tags)) role.tags = d.tags;
-    } catch (e) {}
-    return role.tags || [];
-}
-    // ============ 主页收割事件绑定 ============
     function bindHarvestEvents(contentEl) {
         const harvestBtn = contentEl.querySelector('#mufy-harvest-start');
         if (!harvestBtn) return;
 
         harvestBtn.addEventListener('click', async () => {
-            const startIdx = Math.max(1, parseInt(contentEl.querySelector('#mufy-harvest-start-idx').value) || 1);
-            const endIdx = Math.max(startIdx, parseInt(contentEl.querySelector('#mufy-harvest-end-idx').value) || 10);
+            const startPage = parseInt(contentEl.querySelector('#mufy-harvest-start-page').value) || 1;
+            const endPage = parseInt(contentEl.querySelector('#mufy-harvest-end-page').value) || startPage;
             const onlyUnfollowed = contentEl.querySelector('#mufy-harvest-unfollowed').checked;
             const sendMsg = contentEl.querySelector('#mufy-harvest-send-msg').checked;
             const msgText = contentEl.querySelector('#mufy-harvest-msg-text').value.trim() || "你好";
 
-            const selectedSources = [];
-            contentEl.querySelectorAll('.mufy-harvest-source:checked').forEach(cb => selectedSources.push(cb.value));
-            if (selectedSources.length === 0) return alert('请至少选择一个抓取来源');
-
-            const customTagsRaw = contentEl.querySelector('#mufy-harvest-custom-tags').value.trim();
-            const customTags = customTagsRaw ? customTagsRaw.split(/[,，;；\s]+/).filter(Boolean) : [];
-
-            let authorIds = [];
-            if (selectedSources.includes('author')) {
-                authorIds = parseAuthorIds(contentEl.querySelector('#mufy-harvest-author-input').value.trim());
-                if (authorIds.length === 0) return alert('选择了作者主页但没解析到有效作者 ID');
-            }
-
-            if (sendMsg && !confirm(`警告：你勾选了自动发消息，这会扣除额度！\n请保持网页在前台，确定执行吗？`)) return;
+            if (endPage < startPage) return alert("结束页不能小于起始页");
+            if (sendMsg && !confirm("警告：你勾选了自动发消息，这会扣除对应的对话额度！\n执行期间请务必保持网页在前台，否则浏览器会休眠停止任务。\n确定要执行吗？")) return;
 
             const h = state.harvest;
             h.running = true;
             h.status = '准备开始...';
             h.successFollow = [];
             h.successMsg = [];
-            h.lastStartIdx = startIdx;
-            h.lastEndIdx = endIdx;
 
             renderHarvestTab(contentEl);
 
             const statusEl = contentEl.querySelector('#mufy-harvest-status');
             const resultBox = contentEl.querySelector('#mufy-harvest-result');
             const listEl = contentEl.querySelector('#mufy-harvest-list');
-            const setStatus = (text) => { h.status = text; if (statusEl) statusEl.textContent = text; };
 
-            const allChars = new Map();
-            const chattedCharacterIds = new Set();
+            let allChars = new Map();
+            let chattedCharacterIds = new Set(); // 用于存放已经聊过的角色ID
 
             try {
+                // 1. 前置准备：抓取你的历史聊天记录（最多抓 5 页 = 500 个），绝对防止给聊过的人发消息
                 if (sendMsg) {
-                    setStatus('正在拉取历史聊天记录...');
+                    h.status = '正在拉取历史聊天记录进行过滤...';
+                    if (statusEl) statusEl.textContent = h.status;
                     try {
                         for (let p = 1; p <= 5; p++) {
                             const histRes = await mufyGet(`${API_BASE}/api/characters/query_session?pageNum=${p}&pageSize=100&isFollowed=false`);
@@ -1706,106 +1325,128 @@ async function ensureRoleTags(role) {
                                     if (cid) chattedCharacterIds.add(cid);
                                 });
                                 if (histData.length < 100) break;
-                            } else break;
+                            } else {
+                                break;
+                            }
                         }
-                    } catch (e) {}
+                    } catch (e) {
+                        console.warn('拉取历史记录失败，可能无法过滤已聊角色', e);
+                    }
                 }
 
-                for (const src of selectedSources) {
-                    if (allChars.size >= (endIdx - startIdx + 1)) break;
-                    const cfg = HARVEST_SOURCES[src];
-                    if (!cfg) continue;
-                    if (cfg.type === 'author') {
-                        await harvestAuthorCharacters(authorIds, startIdx, endIdx, onlyUnfollowed, allChars, setStatus);
-                    } else {
-                        let tags = cfg.tags;
-                        let label = cfg.label;
-                        if (src === 'trending_custom') {
-                            if (customTags.length === 0) continue;
-                            tags = customTags;
-                            label = `趋势榜·[${customTags.join('/')}]`;
-                        }
-                        await harvestRankList(cfg.sortBy, tags, startIdx, endIdx, onlyUnfollowed, allChars, setStatus, label);
+                // 2. 抓取主页推荐列表
+                for (let p = startPage; p <= endPage; p++) {
+                    h.status = `正在抓取第 ${p}/${endPage} 页角色...`;
+                    if (statusEl) statusEl.textContent = h.status;
+
+                    const res = await mufyPost(`${API_BASE}/api/characters/query`, {
+                        pageNum: p, pageSize: 16, sortBy: "trending", genderText: "全性别", tags: [], showNsfw: true, search: ""
+                    });
+
+                    const data = res?.data?.data;
+                    if (Array.isArray(data)) {
+                        data.forEach(c => {
+                            if (!onlyUnfollowed || !c.isFollowed) {
+                                allChars.set(c.characterId, {
+                                    characterId: c.characterId, name: c.name,
+                                    authorId: c.creatorId, authorName: c.creatorName, isFollowed: c.isFollowed
+                                });
+                            }
+                        });
                     }
+                    await sleep(800);
                 }
 
                 const charArray = [...allChars.values()];
                 if (charArray.length === 0) {
-                    setStatus('未抓取到符合条件的角色，请检查区间或来源。');
+                    h.status = '未抓取到符合条件的角色。';
+                    if (statusEl) statusEl.textContent = h.status;
                     h.running = false;
                     renderHarvestTab(contentEl);
                     return;
                 }
 
-                setStatus(`抓取完成，共 ${charArray.length} 个角色，开始处理...`);
-
+                // 3. 遍历处理
                 for (let i = 0; i < charArray.length; i++) {
                     const c = charArray[i];
-                    setStatus(`处理中 (${i + 1}/${charArray.length})：${c.name}`);
+                    h.status = `处理中 (${i+1}/${charArray.length})：${c.name}`;
+                    if (statusEl) statusEl.textContent = h.status;
 
+                    // 收藏部分
                     if (!c.isFollowed) {
                         const res = await followCharacter(c.characterId, true);
                         if (res.ok) {
                             h.successFollow.push(c.name);
                             c.isFollowed = true;
+
                             if (listEl) {
-                                listEl.insertAdjacentHTML('beforeend', `<div style="color:#ccc; margin-bottom:2px;">[收藏] ${esc(c.name)}</div>`);
+                                listEl.insertAdjacentHTML('beforeend', `<div style="color:#ccc; margin-bottom:2px;">[收藏] ${c.name}</div>`);
                                 if (resultBox) resultBox.style.display = 'block';
                             }
                             const existing = state.roles.find(r => r.characterId === c.characterId);
                             if (existing) existing.isFollowed = true;
                             else state.roles.push({
                                 characterId: c.characterId, name: c.name, authorId: c.authorId, authorName: c.authorName,
-                                rounds: 0, hasCommented: false, isScanning: false, hasScanned: true,
-                                isExpired: false, isFollowed: true, lastSessionId: null
+                                rounds: 0, hasCommented: false, isScanning: false, hasScanned: true, isExpired: false, isFollowed: true, lastSessionId: null
                             });
                             saveCache();
                         }
                         await sleep(500);
                     }
 
+                    // 打招呼部分
                     if (sendMsg) {
+                        // ★ 检测是否聊过（查黑名单 & 本地缓存）
                         let hasChatted = chattedCharacterIds.has(c.characterId);
+
                         if (!hasChatted) {
                             const localRole = state.roles.find(r => r.characterId === c.characterId);
-                            if (localRole && (localRole.rounds > 0 || localRole.lastSessionId)) hasChatted = true;
+                            if (localRole && (localRole.rounds > 0 || localRole.lastSessionId)) {
+                                hasChatted = true;
+                            }
                         }
+
                         if (hasChatted) {
                             h.successMsg.push(`${c.name}(聊过)`);
                             if (listEl) {
-                                listEl.insertAdjacentHTML('beforeend', `<div style="color:#888; margin-bottom:2px;">[跳过打招呼] ${esc(c.name)} (已有记录)</div>`);
+                                listEl.insertAdjacentHTML('beforeend', `<div style="color:#888; margin-bottom:2px;">[跳过打招呼] ${c.name} (已有聊天记录)</div>`);
                                 if (resultBox) resultBox.style.display = 'block';
                             }
-                            continue;
+                            continue; // 跳过发消息
                         }
 
-                        setStatus(`正在打招呼 (${i + 1}/${charArray.length})：${c.name}`);
+                        h.status = `正在打招呼 (${i+1}/${charArray.length})：${c.name}`;
+                        if (statusEl) statusEl.textContent = h.status;
+
                         const ok = await sendHelloToCharacter(c.characterId, msgText);
                         if (ok) {
                             h.successMsg.push(c.name);
                             if (listEl) {
-                                listEl.insertAdjacentHTML('beforeend', `<div style="color:#ccc; margin-bottom:2px;">[打招呼] ${esc(c.name)}</div>`);
+                                listEl.insertAdjacentHTML('beforeend', `<div style="color:#ccc; margin-bottom:2px;">[打招呼] ${c.name}</div>`);
                                 if (resultBox) resultBox.style.display = 'block';
                             }
                             const localRole = state.roles.find(r => r.characterId === c.characterId);
                             if (localRole) localRole.lastSessionId = 'temp_from_harvest';
+
                         } else {
                             if (listEl) {
-                                listEl.insertAdjacentHTML('beforeend', `<div style="color:#ff5252; margin-bottom:2px;">[打招呼失败] ${esc(c.name)}</div>`);
+                                listEl.insertAdjacentHTML('beforeend', `<div style="color:#ff5252; margin-bottom:2px;">[打招呼失败] ${c.name}</div>`);
                                 if (resultBox) resultBox.style.display = 'block';
                             }
                         }
-                        await sleep(Math.floor(Math.random() * 3000) + 3000);
-                    }
+                      // 把固定的2秒，改成 3到6秒 的随机数，看起来更像真人
+await sleep(Math.floor(Math.random() * 3000) + 3000);                    }
                 }
 
-                addCollectionLog(`主页收割完成（${charArray.length} 个角色）`);
-                setStatus(`执行完成。收藏 ${h.successFollow.length} 个`);
+                addCollectionLog(`主页收割完成`);
+                h.status = '执行完成。';
+                if (statusEl) statusEl.textContent = h.status;
                 h.running = false;
                 renderHarvestTab(contentEl);
 
             } catch (err) {
-                setStatus('抓取失败：' + err.message);
+                h.status = '抓取失败：' + err.message;
+                if (statusEl) statusEl.textContent = h.status;
                 h.running = false;
                 renderHarvestTab(contentEl);
             }
@@ -1813,20 +1454,9 @@ async function ensureRoleTags(role) {
     }
     // ============ 面具库渲染 ============
     function renderMaskLibrary(contentEl) {
-    const allItems = state.maskLibrary.items;
-    // ★ 搜索过滤（只影响列表展示，不影响槽位统计）
-    let items = allItems;
-    if (state.searchQuery) {
-        const q = state.searchQuery.toLowerCase();
-        items = allItems.filter(m =>
-            String(m.maskName || '').toLowerCase().includes(q) ||
-            String(m.gender || '').toLowerCase().includes(q) ||
-            String(m.remark || '').toLowerCase().includes(q) ||
-            String(m.description || '').toLowerCase().includes(q)
-        );
-    }
-    const inSlot = allItems.filter(i => i.officialMaskId).length;
-    let html = `
+        const items = state.maskLibrary.items;
+        const inSlot = items.filter(i => i.officialMaskId).length;
+        let html = `
           <div class="mufy-folder-actions">
             <button class="mufy-folder-btn primary" id="mufy-lib-sync">同步官方槽位</button>
             <button class="mufy-folder-btn" id="mufy-lib-new">新增面具</button>
@@ -1907,387 +1537,16 @@ async function ensureRoleTags(role) {
 
     function esc(v) { return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-
-       // ============ 备忘录渲染 ============
-    function renderMemoTab(contentEl) {
-        let html = `
-          <div style="padding: 10px; display:flex; flex-direction:column; height:100%; box-sizing:border-box;">
-            <div style="font-size: 14px; color: #fff; margin-bottom: 8px;">本地备忘录</div>
-            <div style="margin-bottom: 12px; color: #666; font-size:12px;">内容实时自动保存，刷新/切号都不会丢。</div>
-            <textarea id="mufy-memo-input" class="mufy-input" style="flex:1; background:#0a0a0a; border:1px solid #333; border-radius:6px; padding:12px; color:#fff; font-size:13px; line-height:1.6; resize:none; min-height: 350px; outline:none; box-sizing:border-box;" placeholder="在这里记录你的脑洞、NPC好感度、跑团设定..."></textarea>
-            <div style="display:flex; justify-content:flex-end; margin-top:12px;">
-                <button class="mufy-folder-btn" id="mufy-memo-clear" style="color:#ff5252; border-color:#5a1f1f;">清空内容</button>
-            </div>
-          </div>
-        `;
-        contentEl.innerHTML = html;
-
-        const input = contentEl.querySelector('#mufy-memo-input');
-        const clearBtn = contentEl.querySelector('#mufy-memo-clear');
-
-        // ★ 用 JS 赋值，比直接写死在 HTML 里更安全
-        input.value = localStorage.getItem('mufy_memo_text') || '';
-
-        // 实时保存
-        input.addEventListener('input', (e) => {
-            localStorage.setItem('mufy_memo_text', e.target.value);
-        });
-
-        clearBtn.addEventListener('click', () => {
-            if (confirm('确定要清空备忘录吗？')) {
-                input.value = '';
-                localStorage.setItem('mufy_memo_text', '');
-            }
-        });
-}
-
-
-    // ============ 剧情快照渲染 ============
-        // ============ 剧情快照渲染（上帝视角版） ============
-    function renderArchiveTab(contentEl) {
-        // 初始化状态
-        const urlParams = new URLSearchParams(location.search);
-        const currentRoleId = urlParams.get('roleId');
-
-        let html = `
-          <div style="padding: 10px; font-size: 13px; color: #aaa; line-height: 1.6;">
-            <div style="font-size: 14px; color: #fff; margin-bottom: 8px;">剧情快照存档</div>
-            <div style="margin-bottom: 12px; color: #666;">抓取任意角色的历史存档，连同当时绑定的面具一起打包。</div>
-
-            <div style="background:#0a0a0a; border:1px solid #333; border-radius:6px; padding:12px; margin-bottom:16px;">
-                <div style="display:flex; gap:8px; margin-bottom:12px;">
-                    <select id="mufy-archive-role-select" class="mufy-input" style="flex:1; padding:6px; background:#000; border:1px solid #333; border-radius:4px; color:#fff;">
-                        <option value="">加载角色列表中...</option>
-                    </select>
-                    <button class="mufy-folder-btn" id="mufy-archive-load-btn" style="flex:none;">读取存档</button>
-                </div>
-
-                <div id="mufy-archive-info" style="display:none; background:#111; border:1px solid #222; border-radius:4px; padding:10px; margin-bottom:12px;">
-                    <div style="color:#fff; margin-bottom:4px;">角色: <span id="mufy-archive-char-name">-</span></div>
-                    <div style="color:#00bcd4;">当前绑定面具: <span id="mufy-archive-mask-name">-</span></div>
-                </div>
-
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <span style="color:#aaa; font-size:12px;">选择要导出的存档：</span>
-                    <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:11px;">
-                        <input type="checkbox" id="mufy-archive-select-all"> 全选
-                    </label>
-                </div>
-                <div id="mufy-archive-list" style="max-height:200px; overflow-y:auto; background:#050505; border:1px solid #222; border-radius:4px; padding:6px; margin-bottom:12px;">
-                    <div style="text-align:center; color:#555; font-size:12px; padding:10px;">请先选择角色并读取</div>
-                </div>
-
-                <div style="display:flex; gap:8px; margin-bottom:12px;">
-                    <label style="display:flex; align-items:center; gap:4px; font-size:12px; color:#ccc;">
-                        <input type="checkbox" id="mufy-archive-pure-text" checked> 纯正文（去状态栏代码）
-                    </label>
-                </div>
-
-                <div style="display:flex; gap:8px;">
-                    <button class="mufy-btn" id="mufy-archive-export-md" style="flex:1; height:36px; background:#fff; color:#000;">导出 Markdown</button>
-                    <button class="mufy-folder-btn" id="mufy-archive-export-json" style="flex:1; height:36px; justify-content:center;">导出 JSON 备份</button>
-                </div>
-            </div>
-          </div>
-        `;
-        contentEl.innerHTML = html;
-
-        const roleSelect = contentEl.querySelector('#mufy-archive-role-select');
-        const loadBtn = contentEl.querySelector('#mufy-archive-load-btn');
-        const infoBox = contentEl.querySelector('#mufy-archive-info');
-        const charNameEl = contentEl.querySelector('#mufy-archive-char-name');
-        const maskNameEl = contentEl.querySelector('#mufy-archive-mask-name');
-        const listBox = contentEl.querySelector('#mufy-archive-list');
-        const selectAllCb = contentEl.querySelector('#mufy-archive-select-all');
-        const exportMdBtn = contentEl.querySelector('#mufy-archive-export-md');
-        const exportJsonBtn = contentEl.querySelector('#mufy-archive-export-json');
-        const pureTextCb = contentEl.querySelector('#mufy-archive-pure-text');
-
-        let loadedArchives = []; // 当前加载的存档列表
-        let currentCharId = '';
-
-        // 1. 填充角色列表
-        if (state.roles.length === 0) {
-            roleSelect.innerHTML = '<option value="">请先在"角色数据"扫描一次</option>';
-        } else {
-            roleSelect.innerHTML = state.roles.map(r => `<option value="${r.characterId}">${esc(r.name)}</option>`).join('');
-            // 默认选中当前聊天的角色
-            if (currentRoleId) {
-                roleSelect.value = currentRoleId;
-            }
-        }
-
-        // 2. 点击读取存档
-        loadBtn.addEventListener('click', async () => {
-            currentCharId = roleSelect.value;
-            if (!currentCharId) return alert('请先选择一个角色');
-
-            loadBtn.disabled = true; loadBtn.textContent = '...';
-            listBox.innerHTML = '<div style="text-align:center; color:#666; padding:10px;">正在拉取存档节点...</div>';
-            infoBox.style.display = 'block';
-
-            // 获取角色信息与面具绑定
-            const roleObj = state.roles.find(r => r.characterId === currentCharId);
-            charNameEl.textContent = roleObj ? roleObj.name : '未知角色';
-
-            let maskLabel = '未绑定';
-            if (state.maskBindings[currentCharId]) {
-                const bind = state.maskBindings[currentCharId];
-                if (bind.localId) {
-                    const libItem = state.maskLibrary.items.find(i => i.localId === bind.localId);
-                    maskLabel = libItem ? libItem.maskName : bind.maskName;
-                } else {
-                    maskLabel = bind.maskName || '未知面具';
-                }
-            }
-            maskNameEl.textContent = maskLabel;
-
-            try {
-                               // 拉取所有存档
-                const archivesRes = await mufyGet(`${API_BASE}/api/sessions/query_archives?characterId=${currentCharId}`);
-                // 兼容性处理：直接取 data 数组，如果没有再尝试取 data.data
-                loadedArchives = Array.isArray(archivesRes?.data) ? archivesRes.data : (archivesRes?.data?.data || []);
-
-                // 尝试把当前活跃聊天的 lastSessionId 找出来
-                let lastSessionId = roleObj?.lastSessionId || '';
-                if (currentRoleId === currentCharId) {
-                     const urlSid = new URLSearchParams(location.search).get('sessionId');
-                     if (urlSid) lastSessionId = urlSid;
-                }
-
-                let listHtml = '';
-
-                // 先加上"当前最新未存档"
-                if (lastSessionId) {
-                    listHtml += `
-                    <label style="display:flex; align-items:flex-start; gap:8px; padding:8px; border-bottom:1px solid #222; cursor:pointer; color:#fff;">
-                        <input type="checkbox" class="archive-cb" data-sid="${lastSessionId}" checked style="margin-top:3px;">
-                        <div>
-                            <div style="color:#4caf50; font-weight:500;">🟢 当前活跃对话 (未存档)</div>
-                            <div style="color:#888; font-size:11px;">SID: ${lastSessionId.slice(0, 8)}...</div>
-                        </div>
-                    </label>`;
-                }
-
-                // 加上历史存档
-                if (loadedArchives.length === 0 && !lastSessionId) {
-                    listHtml += '<div style="text-align:center; color:#666; padding:10px;">这个角色没有任何聊天记录</div>';
-                } else {
-                    loadedArchives.forEach(a => {
-                        const d = new Date(a.createdAt).toLocaleString('zh-CN');
-                        const remark = a.remark ? `<span style="color:#ffb74d;">[${esc(a.remark)}]</span>` : '';
-                        listHtml += `
-                        <label style="display:flex; align-items:flex-start; gap:8px; padding:8px; border-bottom:1px solid #222; cursor:pointer; color:#ccc;">
-                            <input type="checkbox" class="archive-cb" data-sid="${a.sourceSessionId}" checked style="margin-top:3px;">
-                            <div>
-                                <div style="font-size:12px;"> ${d} ${remark}</div>
-                                <div style="color:#666; font-size:11px;">SID: ${a.sourceSessionId.slice(0, 8)}...</div>
-                            </div>
-                        </label>`;
-                    });
-                }
-
-                listBox.innerHTML = listHtml;
-
-            } catch (err) {
-                listBox.innerHTML = `<div style="text-align:center; color:#ff5252; padding:10px;">读取失败: ${err.message}</div>`;
-            } finally {
-                loadBtn.disabled = false; loadBtn.textContent = '读取存档';
-            }
-        });
-
-        // 3. 全选逻辑
-        selectAllCb.addEventListener('change', (e) => {
-            const cbs = listBox.querySelectorAll('.archive-cb');
-            cbs.forEach(cb => cb.checked = e.target.checked);
-        });
-
-        // 4. 核心抓取与导出逻辑
-        async function doExport(format) {
-            const selectedCbs = Array.from(listBox.querySelectorAll('.archive-cb:checked'));
-            if (selectedCbs.length === 0) return alert('请至少勾选一个存档！');
-
-            const isPure = pureTextCb.checked;
-            const charName = charNameEl.textContent;
-            const maskName = maskNameEl.textContent;
-            const maskBind = state.maskBindings[currentCharId] || null;
-
-            exportMdBtn.disabled = true; exportJsonBtn.disabled = true;
-            exportMdBtn.textContent = '抓取中...';
-
-            try {
-                let allDialogs = [];
-                for (let i = 0; i < selectedCbs.length; i++) {
-                    const sid = selectedCbs[i].getAttribute('data-sid');
-                    exportMdBtn.textContent = `抓取 (${i+1}/${selectedCbs.length})...`;
-
-                    let page = 1, hasNext = true;
-                    while (hasNext && page <= 50) {
-                        const dRes = await mufyGet(`${API_BASE}/api/dialogs/query?sessionId=${sid}&characterId=${currentCharId}&pageNum=${page}&pageSize=200`);
-                        if (dRes?.code === 200 && dRes.data?.data) {
-                            const rows = dRes.data.data;
-                            allDialogs.push(...rows);
-                            hasNext = dRes.data.hasNext;
-                            page++;
-                        } else {
-                            break;
-                        }
-                        await sleep(200);
-                    }
-                }
-
-                if (allDialogs.length === 0) throw new Error('未抓取到任何对话内容。');
-
-                // 按时间排序
-                allDialogs.sort((a, b) => new Date(a.createdTime || 0) - new Date(b.createdTime || 0));
-
-                if (format === 'json') {
-                    const jsonData = {
-                        _mufy_backup: true,
-                        character: { id: currentCharId, name: charName },
-                        mask: { name: maskName, bindInfo: maskBind },
-                        dialogs: allDialogs
-                    };
-                    const blob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json' });
-                    triggerDownload(blob, `Mufy_快照_${charName}_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.json`);
-                } else {
-                    exportMdBtn.textContent = '清洗排版中...';
-                    let md = `# ${charName} · 剧情记录\n\n`;
-                    md += `- **导出时间**：${new Date().toLocaleString('zh-CN')}\n`;
-                    md += `- **使用面具**：${maskName}\n`;
-                    md += `- **包含存档**：${selectedCbs.length} 个\n`;
-                    if (isPure) md += `- **已开启清洗**：状态栏、HTML代码已被过滤\n`;
-                    md += `\n---\n\n`;
-
-                    allDialogs.forEach(msg => {
-                        const isUser = msg.role === 'user';
-                        const who = isUser ? ' 我' : ` ${charName}`;
-                        const time = msg.createdTime ? new Date(msg.createdTime).toLocaleString('zh-CN') : '';
-
-                        let text = contentToText(msg.content);
-                        if (isPure) text = extractPureText(text);
-                        if (!text.trim()) return;
-
-                        md += `**${who}** <sub>${time}</sub>\n\n${text}\n\n`;
-                    });
-
-                    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
-                    triggerDownload(blob, `${charName}_剧情_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.md`);
-                }
-            } catch (err) {
-                alert('导出失败: ' + err.message);
-            } finally {
-                exportMdBtn.disabled = false; exportJsonBtn.disabled = false;
-                exportMdBtn.textContent = '导出 Markdown';
-            }
-        }
-
-        exportMdBtn.addEventListener('click', () => doExport('md'));
-        exportJsonBtn.addEventListener('click', () => doExport('json'));
-
-                // 辅助下载函数（防拦截、防闪断版）
-        function triggerDownload(blob, filename) {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.style.display = 'none';
-
-            // ★ 必须挂载到 body 上，否则部分浏览器不触发
-            document.body.appendChild(a);
-            a.click();
-
-            // ★ 延迟清理，给浏览器留出把文件写进磁盘的时间
-            setTimeout(() => {
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            }, 2000);
-        }
-    }
-    // ============ 纯文本提取============
-    function extractPureText(htmlString) {
-        if (!htmlString) return '';
-        try {
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(htmlString, 'text/html');
-
-            // 1. 删掉所有状态栏、思维链等标签
-            const tagsToRemove = ['details', 'style', 'script', 'think', 'hypo'];
-            tagsToRemove.forEach(tag => {
-                doc.querySelectorAll(tag).forEach(el => el.remove());
-            });
-
-            // 2. 删掉带 clean 样式的包裹层
-            const classesToRemove = ['a-clean', 'b-clean', 'a-status', 'status-bar'];
-            classesToRemove.forEach(cls => {
-                doc.querySelectorAll('.' + cls).forEach(el => el.remove());
-            });
-
-            // 3. 剥离 message 标签
-            doc.querySelectorAll('message').forEach(el => {
-                el.replaceWith(el.textContent);
-            });
-
-            let text = doc.body.innerText || doc.body.textContent || '';
-            return text.replace(/\n{3,}/g, '\n\n').trim();
-        } catch(e) {
-            console.warn("正文清洗失败，退回原始文本", e);
-            return htmlString;
-        }
-    }
-
-    // 把接口返回的 content 数组转换成纯文本
-    function contentToText(content) {
-        if (typeof content === 'string') return content;
-        if (!Array.isArray(content)) return content == null ? '' : JSON.stringify(content);
-        return content
-            .map((part) => {
-                if (part == null) return '';
-                if (typeof part === 'string') return part;
-                if (part.type === 'text' || typeof part.text === 'string') return part.text || '';
-                return JSON.stringify(part);
-            })
-            .join('\n');
-    }
     function renderContent(contentEl) {
         const isAuthor = state.activeTab === 'author';
         let data = isAuthor ? state.authors : state.roles;
         if (!state.isScanning && state.searchQuery) {
-    const p = state.searchParsed || parseSearchToken(state.searchQuery);
-    const q = (p.q || p.raw || '').toLowerCase();
-
-    data = data.filter(item => {
-        // 精确 ID 命中
-        if (p.type === 'id' || p.type === 'roleId') {
-            return isSameId(item.characterId, p.id) ||
-                   (isAuthor && isSameId(item.id, p.id));
+            const q = state.searchQuery.toLowerCase();
+            data = data.filter(item => {
+                if (isAuthor) return item.name.toLowerCase().includes(q) || String(item.id).toLowerCase().includes(q);
+                return item.name.toLowerCase().includes(q) || String(item.characterId).toLowerCase().includes(q) || String(item.authorName).toLowerCase().includes(q);
+            });
         }
-        if (p.type === 'authorId') {
-            return isAuthor ? isSameId(item.id, p.id)
-                            : isSameId(item.authorId, p.id);
-        }
-        if (p.type === 'shareCode') {
-            return false; // 由外部解析，不在列表里匹配
-        }
-        // 关键词模糊
-        if (isAuthor) {
-            return String(item.name).toLowerCase().includes(q) ||
-                   String(item.id).toLowerCase().includes(q);
-        }
-        return String(item.name).toLowerCase().includes(q) ||
-               String(item.characterId).toLowerCase().includes(q) ||
-               String(item.authorName || '').toLowerCase().includes(q) ||
-               String(item.authorId || '').toLowerCase().includes(q);
-    });
-
-    // shareCode / roleUrl 这类需要额外解析的，走单点查询
-    if ((p.type === 'shareCode' || p.type === 'roleUrl') && !data.length) {
-        // 自动把输入丢进顶部单点查询框并触发
-        singleInput.value = p.raw;
-        singleBtn.click();
-        return;
-    }
-}
         if (!data.length) { contentEl.innerHTML = `<div class="mufy-empty">${state.searchQuery ? '没有找到匹配的条目' : '暂无数据'}</div>`; return; }
         contentEl.innerHTML = data.slice(0, MAX_RENDER_COUNT).map((item, index) => {
             const rank = state.isScanning ? `#${index + 1}` : (index < 3 ? `0${index + 1}` : `#${index + 1}`);
@@ -2374,32 +1633,21 @@ async function ensureRoleTags(role) {
 
     function saveSavedAccounts(accounts) {
         localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-}
+    }
 
-          function renderAccountsTab(contentEl, setStatus) {
-        const accounts = getSavedAccounts();
-state.accounts = accounts;
+       function renderAccountsTab(contentEl, setStatus) {
+        const accounts = state.accounts;
+        // ★ 修复：直接从 localStorage 读取当前 Token，避免被拦截的 capturedAuth 干扰导致大小号错乱
         let localToken = localStorage.getItem('mufy-token') || localStorage.getItem('token') || localStorage.getItem('mufy_token') || '';
         const currentToken = localToken.replace(/^Bearer\s+/i, '');
 
         let html = `
           <div style="padding: 10px; font-size: 13px; color: #aaa; line-height: 1.6;">
             <div style="font-size: 14px; color: #fff; margin-bottom: 8px;">账号管理</div>
-            <div style="margin-bottom: 12px; color: #666;">利用官方登录接口实现丝滑切号与全签。</div>
-
-            <!-- 账号密码登录 -->
-            <div style="margin-bottom: 16px; padding:12px; background:#0a0a0a; border:1px solid #222; border-radius:8px;">
-                <div style="font-size:12px; color:#888; margin-bottom:8px;">通过账号密码登录并保存（推荐）</div>
-                <div style="display:flex; gap:8px; flex-direction:column;">
-                    <input type="text" id="mufy-acc-email" class="mufy-input" placeholder="邮箱 / 账号" style="width:100%; padding:8px; background:#000; border:1px solid #333; border-radius:4px; color:#fff;">
-                    <input type="password" id="mufy-acc-pwd" class="mufy-input" placeholder="密码" style="width:100%; padding:8px; background:#000; border:1px solid #333; border-radius:4px; color:#fff;">
-                    <button class="mufy-btn" id="mufy-acc-login-save" style="width:100%; height:36px; background:#222; color:#ccc; border:1px solid #444;">登录并保存</button>
-                </div>
-                <div style="font-size:11px; color:#ffb74d; margin-top:8px;">⚠️ 密码以明文保存在本地。</div>
-            </div>
+            <div style="margin-bottom: 12px; color: #666;">保存不同账号的 Token，利用“活跃即签到”机制实现一键全签。</div>
 
             <div style="display:flex; gap:8px; margin-bottom: 16px;">
-                <button class="mufy-btn" id="mufy-acc-save" style="flex:1; height:36px; background:#fff; color:#000;">仅保存当前号(无密码)</button>
+                <button class="mufy-btn" id="mufy-acc-save" style="flex:1; height:36px; background:#fff; color:#000;">保存当前账号</button>
                 <button class="mufy-btn" id="mufy-acc-sign-all" style="flex:1; height:36px; background:#222; color:#ccc; border:1px solid #444;">一键全签</button>
             </div>
 
@@ -2413,17 +1661,19 @@ state.accounts = accounts;
                     <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; border-bottom:1px solid #1a1a1a;">
                         <div style="flex:1;">
                             <div style="color:#ccc; font-size:13px; margin-bottom:2px;">${esc(acc.name)} ${isCurrent ? '<span style="color:#666;font-size:11px;">(当前)</span>' : ''}</div>
-                            <div style="color:#444; font-size:11px;">Token: ${acc.token.slice(0, 10)}...</div>
+                            <div style="color:#444; font-size:11px;">Token: ${acc.token.slice(0, 15)}...</div>
                             <div id="mufy-acc-info-${idx}" style="color:#888; font-size:11px; margin-top:4px;">查询中...</div>
                         </div>
                         <div style="display:flex; gap:6px; flex-direction:column; margin-left:10px;">
                             <button class="mufy-folder-btn" data-acc-ledger="${idx}" style="color:#aaa; border-color:#333;">账本</button>
-                            ${!isCurrent && acc.password ? `<button class="mufy-folder-btn" data-acc-switch="${idx}" style="color:#4caf50; border-color:#2e7d32;">一键切号</button>` : ''}
-                            ${acc.password ? `<button class="mufy-folder-btn" data-acc-refresh="${idx}" style="color:#00bcd4; border-color:#006064;">刷新Token</button>` : ''}
+                            ${!isCurrent ? `<button class="mufy-folder-btn" data-acc-switch="${idx}">切换</button>` : ''}
                             <button class="mufy-folder-btn" data-acc-del="${idx}" style="color:#ff5252; border-color:#5a1f1f;">删除</button>
                         </div>
                     </div>`;
                 }).join('')}
+            </div>
+            <div style="margin-top:16px; font-size:11px; color:#555;">
+              * 如果需要添加新号，请退出登录，在 Mufy 官方网页登录新号后，再来这里点击“保存当前账号”。
             </div>
           </div>
         `;
@@ -2432,32 +1682,26 @@ state.accounts = accounts;
         const saveBtn = contentEl.querySelector('#mufy-acc-save');
         const signAllBtn = contentEl.querySelector('#mufy-acc-sign-all');
         const statusEl = contentEl.querySelector('#mufy-acc-status');
-        const emailInput = contentEl.querySelector('#mufy-acc-email');
-        const pwdInput = contentEl.querySelector('#mufy-acc-pwd');
-        const loginSaveBtn = contentEl.querySelector('#mufy-acc-login-save');
 
+        // 通用请求方法
         async function rawAccountFetch(url, token, method = 'GET', body = null) {
-            const headers = { 'Accept': 'application/json', 'Authorization': `Bearer ${token}`, 'Origin': 'https://chat.mufy.ai', 'Referer': 'https://chat.mufy.ai/' };
+            const headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Authorization': `Bearer ${token}`,
+                'Origin': 'https://chat.mufy.ai',
+                'Referer': 'https://chat.mufy.ai/'
+            };
             const options = { method, headers, credentials: 'include' };
-            if (method === 'POST' && body) { headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
+            if (method === 'POST' && body) {
+                headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(body);
+            }
             const res = await fetch(url, options);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return await res.json();
         }
 
-        async function doLoginAndSave(email, password) {
-            const res = await fetch(`${API_BASE}/api/users/login`, {
-                method: 'POST',
-                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'Origin': 'https://chat.mufy.ai', 'Referer': 'https://chat.mufy.ai/login' },
-                body: JSON.stringify({ email, password })
-            });
-            const json = await res.json();
-            if (json.code === 200 && json.data?.token) return json.data.token;
-            throw new Error(json.reason || '登录失败');
-        }
-
-
-
+        // 1. 查询账号基础信息
         async function fetchAccountInfo() {
             for (let i = 0; i < accounts.length; i++) {
                 const acc = accounts[i];
@@ -2465,90 +1709,43 @@ state.accounts = accounts;
                 if (!domEl) continue;
 
                 try {
-                    let info;
-
-                    try {
-                        // 先使用现有 Token
-                        info = await rawAccountFetch(
-                            `${API_BASE}/api/users/current`,
-                            acc.token
-                        );
-                    } catch (e) {
-                        // 只有 401 才自动刷新
-                        if (!String(e.message).includes('401')) throw e;
-
-                        if (!acc.email || !acc.password) {
-                            throw new Error('Token失效，账号未保存密码');
-                        }
-
-                        domEl.innerHTML = '<span style="color:#00bcd4;">Token过期，自动刷新中...</span>';
-
-                        // 登录获取新 Token
-                        const newToken = await doLoginAndSave(acc.email, acc.password);
-
-                        // 更新账号数据
-                        acc.token = newToken;
-                        accounts[i] = acc;
-                        state.accounts = accounts;
-                        saveSavedAccounts(accounts);
-
-                        // 使用新 Token 再查询一次
-                        info = await rawAccountFetch(
-                            `${API_BASE}/api/users/current`,
-                            newToken
-                        );
-                    }
-
+                    const info = await rawAccountFetch(`${API_BASE}/api/users/current`, acc.token);
                     if (info.code === 200 && info.data) {
                         const d = info.data;
                         const total = d.totalGem ? d.totalGem.toFixed(2) : '0.00';
+                        const free = d.freeGem ? d.freeGem.toFixed(0) : '0';
+                        const paid = d.paidGem ? d.paidGem.toFixed(1) : '0.0';
+                        const rebate = d.rebateGem ? d.rebateGem.toFixed(2) : '0.00';
                         const hasSigned = d.needCheckIn === false;
 
                         domEl.innerHTML = `
-                            <span style="color:#fff;">${total} 总资产</span><br>
+                            <span style="color:#fff; font-weight:500;">${total} 总资产</span>
+                            <span style="color:#666; font-size:10px; margin-left:4px;">(猫粮:${free} / 罐头:${paid} / 鱼干:${rebate})</span>
+                            <br>
                             <span style="color:${hasSigned ? '#aaa' : '#555'};">
                                 ${hasSigned ? '今日已签' : '今日未签'}
                             </span>
                         `;
                     } else {
-                        domEl.innerHTML = `<span style="color:#ffb74d;">数据异常：${esc(String(info.reason || info.code || '未知错误'))}</span>`;
+                        domEl.innerHTML = `<span style="color:#ff5252;">数据异常</span>`;
                     }
-
                 } catch (e) {
-                    console.warn('[Mufy账号检测失败]', acc.name, e);
-                    domEl.innerHTML = `<span style="color:#ff5252;">${esc(String(e.message || e))}</span>`;
+                    domEl.innerHTML = `<span style="color:#ff5252;">Token已失效，请重登保存</span>`;
                 }
-
-                await sleep(200);
+                await sleep(300);
             }
         }
 
-
-
         if (accounts.length > 0) fetchAccountInfo();
 
-        loginSaveBtn.addEventListener('click', async () => {
-            const email = emailInput.value.trim();
-            const password = pwdInput.value.trim();
-            if (!email || !password) return alert('请输入账号和密码');
-            loginSaveBtn.disabled = true; loginSaveBtn.textContent = '登录中...';
-            try {
-                const token = await doLoginAndSave(email, password);
-                const newAccounts = accounts.filter(a => a.name !== email && a.token !== token);
-                newAccounts.push({ name: email, token, email: email, password: password });
-                state.accounts = newAccounts;
-                saveSavedAccounts(newAccounts);
-                alert('登录成功并保存！');
-                renderAccountsTab(contentEl, setStatus);
-            } catch (e) { alert('登录失败：' + e.message); }
-            finally { loginSaveBtn.disabled = false; loginSaveBtn.textContent = '登录并保存'; }
-        });
-
+        // 2. 保存当前账号
         saveBtn.addEventListener('click', () => {
-            if (!localToken) return alert('未检测到当前账号 Token');
+            if (!localToken) return alert('未检测到当前账号 Token，请确认已登录');
             const token = localToken.replace(/^Bearer\s+/i, '');
+
             const name = prompt('给这个账号起个名字：', '账号 ' + (accounts.length + 1));
             if (!name) return;
+
             const newAccounts = accounts.filter(a => a.token !== token);
             newAccounts.push({ name, token });
             state.accounts = newAccounts;
@@ -2556,171 +1753,92 @@ state.accounts = accounts;
             renderAccountsTab(contentEl, setStatus);
         });
 
-              signAllBtn.addEventListener('click', async () => {
+        // 3. 一键全签
+        signAllBtn.addEventListener('click', async () => {
             if (accounts.length === 0) return alert('没有保存的账号');
-            if (!confirm('将依次为所有账号进行真实签到，是否继续？')) return;
+            if (!confirm('将依次唤醒所有账号进行自动签到，是否继续？')) return;
 
             signAllBtn.disabled = true;
             signAllBtn.textContent = '签到中...';
-            statusEl.innerHTML = '准备开始...';
-
-            let newSignCount = 0; // 这次新签到的数量
-            let alreadySignedCount = 0; // 之前已经签过的数量
-            let failCount = 0; // 失败数量
+            let successCount = 0;
 
             for (let i = 0; i < accounts.length; i++) {
                 const acc = accounts[i];
-                statusEl.innerHTML = `正在处理账号 [${i+1}/${accounts.length}]：${acc.name}...`;
+                statusEl.innerHTML = `正在唤醒账号 [${i+1}/${accounts.length}]：${acc.name}...`;
 
                 try {
-                    // 1. 先获取账号最新状态，看看今天签了没
+                    const wakeRes = await fetch(`${API_BASE}/api/users/unread_counts`, {
+                        headers: {
+                            'Authorization': `Bearer ${acc.token}`,
+                            'Accept': 'application/json, text/plain, */*',
+                            'Origin': 'https://chat.mufy.ai',
+                            'Referer': 'https://chat.mufy.ai/'
+                        }
+                    });
+
+                    if (wakeRes.status === 401) {
+                        throw new Error("Token已过期，请重登");
+                    }
+
+                    await sleep(1500);
+
                     const info = await rawAccountFetch(`${API_BASE}/api/users/current`, acc.token);
-                    if (info.code !== 200 || !info.data) throw new Error('获取账号信息失败');
+                    const hasSigned = (info.data && info.data.needCheckIn === false);
 
-                    let total = info.data.totalGem ? info.data.totalGem.toFixed(2) : '0.00';
-                    let hasSigned = (info.data.needCheckIn === false);
+                    if (info.code === 200 && info.data) {
+                        const d = info.data;
+                        const total = d.totalGem ? d.totalGem.toFixed(2) : '0.00';
+                        if (hasSigned) successCount++;
 
-                    // 2. 如果还没签，发送真实的签到请求
-                    if (!hasSigned) {
-                        statusEl.innerHTML += ` <span style="color:#00bcd4;">(签到中...)</span>`;
+                        statusEl.innerHTML += ` <span style="color:${hasSigned ? '#aaa' : '#ffb74d'};">${hasSigned ? '成功' : '失败'} (${total}资产)</span>`;
 
-                        // 发送 POST 请求到签到接口
-                        const checkinRes = await fetch(`${API_BASE}/api/users/checkin`, {
-                            method: 'POST',
-                            headers: {
-                                'Accept': 'application/json, text/plain, */*',
-                                'Authorization': `Bearer ${acc.token}`,
-                                'Origin': 'https://chat.mufy.ai',
-                                'Referer': 'https://chat.mufy.ai/'
-                            },
-                            credentials: 'include'
-                        });
-
-                        if (checkinRes.status === 401) throw new Error("Token已过期(被踢)");
-                        const checkinData = await checkinRes.json();
-
-                        if (checkinData.code === 200) {
-                            // 签到成功，拿到奖励数字（虽然前端不一定要用）
-                            const reward = checkinData.data?.freeGemAmount || 0;
-                            newSignCount++;
-                            statusEl.innerHTML += ` <span style="color:#4caf50;">成功 (+${reward})</span>`;
-
-                            // 签到成功后，再查一次最新资产，更新到界面上
-                            const newInfo = await rawAccountFetch(`${API_BASE}/api/users/current`, acc.token);
-                            if (newInfo.code === 200 && newInfo.data) {
-                                total = newInfo.data.totalGem ? newInfo.data.totalGem.toFixed(2) : total;
-                                hasSigned = true; // 标记为已签
-                            }
-                        } else {
-                            throw new Error(checkinData.reason || '签到接口报错');
+                        const infoEl = contentEl.querySelector(`#mufy-acc-info-${i}`);
+                        if (infoEl) {
+                            infoEl.innerHTML = `
+                                <span style="color:#fff; font-weight:500;">${total} 总资产</span>
+                                <br>
+                                <span style="color:${hasSigned ? '#aaa' : '#555'};">
+                                    ${hasSigned ? '今日已签' : '今日未签'}
+                                </span>
+                            `;
                         }
                     } else {
-                        // 已经签过了，直接跳过
-                        alreadySignedCount++;
-                        statusEl.innerHTML += ` <span style="color:#888;">(今日已签，跳过)</span>`;
+                        throw new Error("数据异常");
                     }
-
-                    // 3. 更新这一行账号的 UI 显示
-                    const infoEl = contentEl.querySelector(`#mufy-acc-info-${i}`);
-                    if (infoEl) {
-                        infoEl.innerHTML = `
-                            <span style="color:#fff;">${total} 总资产</span><br>
-                            <span style="color:${hasSigned ? '#aaa' : '#555'};">
-                                ${hasSigned ? '今日已签' : '今日未签'}
-                            </span>
-                        `;
-                    }
-
                 } catch (e) {
-                    failCount++;
-                    statusEl.innerHTML += ` <span style="color:#ff5252;">(失败: ${e.message})</span>`;
-                    console.warn(`[签到失败] ${acc.name}`, e);
+                    statusEl.innerHTML += ` <span style="color:#ff5252;">${e.message}</span>`;
                 }
-
-                // 稍微停顿一下，避免请求过快被服务器拦截
-                await sleep(1000);
+                await sleep(800);
             }
 
             signAllBtn.textContent = '一键全签';
             signAllBtn.disabled = false;
-            statusEl.innerHTML = `全签完毕！✨<br>新签到: <span style="color:#4caf50;">${newSignCount}</span> 个，已签跳过: <span style="color:#aaa;">${alreadySignedCount}</span> 个，失败: <span style="color:#ff5252;">${failCount}</span> 个`;
+            statusEl.innerHTML = `全签执行完毕！本次签到成功: ${successCount}/${accounts.length} 个账号`;
         });
-               // 4. 一键切号（打标记自愈版）
+
+        // 4. 切换与删除（彻底修复切换 bug）
         contentEl.querySelectorAll('[data-acc-switch]').forEach(btn => {
-            btn.addEventListener('click', async () => {
+            btn.addEventListener('click', () => {
                 const idx = btn.getAttribute('data-acc-switch');
                 const acc = accounts[idx];
-                if (!confirm(`确定自动登录并切换到「${acc.name}」吗？`)) return;
+                if (confirm(`确定切换到「${acc.name}」并刷新页面吗？\n\n提示：如果切换失败，请检查官方是否限制了多端登录。`)) {
+                    // 写入新 Token
+                    localStorage.setItem('mufy-token', acc.token);
 
-                btn.disabled = true; btn.textContent = '切号中...';
-                try {
-                    const res = await fetch('https://chat.mufy.ai/api/users/login', {
-                        method: 'POST',
-                        headers: {
-                            'Accept': 'application/json, text/plain, */*',
-                            'Content-Type': 'application/json',
-                            'Origin': 'https://chat.mufy.ai',
-                            'Referer': 'https://chat.mufy.ai/login'
-                        },
-                        body: JSON.stringify({ email: acc.email, password: acc.password })
-                    });
-                    const json = await res.json();
-                    if (json.code !== 200 || !json.data?.token) throw new Error(json.reason || '登录失败');
-
-                    const newToken = json.data.token;
-                    const newAccounts = [...accounts];
-                    newAccounts[idx].token = newToken;
-                    state.accounts = newAccounts;
-                    saveSavedAccounts(newAccounts);
-
-                    localStorage.setItem('mufy-token', newToken);
-                    localStorage.setItem('token', newToken);
-                    localStorage.removeItem('mufy-store');
-                    capturedAuth = `Bearer ${newToken}`;
-
-                    // ★ 核心：打个标记，告诉下一次页面加载“我是刚切号过来的”
-                    localStorage.setItem('mufy_just_switched', 'true');
-
-                    window.location.replace('https://chat.mufy.ai/');
-                } catch (e) {
-                    alert('自动登录切换失败：' + e.message);
-                    btn.disabled = false; btn.textContent = '一键切号';
-                }
-            });
-        });
-
-        // 5. 刷新 Token
-        contentEl.querySelectorAll('[data-acc-refresh]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const idx = btn.getAttribute('data-acc-refresh');
-                const acc = accounts[idx];
-                btn.disabled = true; btn.textContent = '请求中...';
-                try {
-                    const newToken = await doLoginAndSave(acc.email, acc.password);
-                    const newAccounts = [...accounts];
-                    newAccounts[idx].token = newToken;
-                    state.accounts = newAccounts;
-                    saveSavedAccounts(newAccounts);
-
-                    if (acc.token === currentToken) {
-                        localStorage.setItem('mufy-token', newToken);
-                        localStorage.setItem('token', newToken);
-                        localStorage.removeItem('mufy-store'); // 顺手清一下
-                        capturedAuth = `Bearer ${newToken}`;
-                        alert('当前号 Token 已刷新！即将刷新页面应用新 Token。');
-                        window.location.reload();
-                    } else {
-                        alert(`账号「${acc.name}」Token 已更新为最新！`);
-                        renderAccountsTab(contentEl, setStatus);
+                    // ★ 关键修复：清理所有可能造成用户状态残留的 Mufy 缓存，防止前端认错人
+                    for (let i = localStorage.length - 1; i >= 0; i--) {
+                        const k = localStorage.key(i);
+                        if (k !== 'mufy_saved_accounts_v1' && k !== 'mufy_mask_library_v1' && k !== 'mufy-token') {
+                            localStorage.removeItem(k);
+                        }
                     }
-                } catch (e) {
-                    alert('刷新失败：' + e.message);
-                    btn.disabled = false; btn.textContent = '刷新Token';
+                    // 强制跳回首页并刷新，让前端重新加载所有状态
+                    window.location.href = 'https://chat.mufy.ai/';
+                    location.reload();
                 }
             });
         });
 
-        // 6. 删除
         contentEl.querySelectorAll('[data-acc-del]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const idx = btn.getAttribute('data-acc-del');
@@ -2734,7 +1852,7 @@ state.accounts = accounts;
             });
         });
 
-        // 7. 赛博账本
+        // ================= 5. 赛博账本 =================
         contentEl.querySelectorAll('[data-acc-ledger]').forEach(btn => {
             btn.addEventListener('click', async () => {
                 const idx = btn.getAttribute('data-acc-ledger');
@@ -2798,15 +1916,19 @@ state.accounts = accounts;
                         const res = await rawAccountFetch(`${API_BASE}/api/transactions/history`, acc.token, 'POST', { pageNum: page, pageSize: 100 });
                         const list = res?.data?.data || [];
                         if (list.length === 0) break;
+
                         allRecords.push(...list);
                         if (!res?.data?.hasNext) break;
+
                         page++;
                         await sleep(300);
                     }
 
                     const now = new Date();
                     let today4am = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 4, 0, 0);
-                    if (now < today4am) today4am.setDate(today4am.getDate() - 1);
+                    if (now < today4am) {
+                        today4am.setDate(today4am.getDate() - 1);
+                    }
 
                     let today = { catFood: 0, can: 0, tip: 0, rebate: 0, earn: 0 };
                     let all = { catFood: 0, can: 0, tip: 0, rebate: 0, earn: 0 };
@@ -2894,71 +2016,15 @@ state.accounts = accounts;
                 }
             });
         });
-}
-               function mount() {
-        // ★★★ 究极自愈：仅当刚刚切号后触发，平时绝对静默 ★★★
-        if (localStorage.getItem('mufy_just_switched') === 'true') {
-            localStorage.removeItem('mufy_just_switched');
-
-            // 延迟 2.5 秒，等前端把该作的妖作完
-            setTimeout(async () => {
-                const token = (localStorage.getItem('mufy-token') || localStorage.getItem('token') || '').replace(/^Bearer\s+/i, '');
-                const saved = JSON.parse(localStorage.getItem('mufy_saved_accounts_v1') || '[]');
-                const acc = saved.find(a => a.token === token);
-
-                if (acc && acc.email && acc.password) {
-                    console.log(`[自愈] 发现刚刚切号，正在后台为您自动刷新 ${acc.name} 的 Token...`);
-                    try {
-                        const res = await fetch('https://chat.mufy.ai/api/users/login', {
-                            method: 'POST',
-                            headers: {
-                                'Accept': 'application/json, text/plain, */*',
-                                'Content-Type': 'application/json',
-                                'Origin': 'https://chat.mufy.ai',
-                                'Referer': 'https://chat.mufy.ai/login'
-                            },
-                            body: JSON.stringify({ email: acc.email, password: acc.password })
-                        });
-                        const json = await res.json();
-                        if (json.code === 200 && json.data?.token) {
-                            const newToken = json.data.token;
-
-                            // 1. 写入网页 LocalStorage
-                            localStorage.setItem('mufy-token', newToken);
-                            localStorage.setItem('token', newToken);
-                            localStorage.removeItem('mufy-store');
-
-                            // 2. 强行覆盖全局缓存（斩断旧号干扰）
-                            capturedAuth = `Bearer ${newToken}`;
-
-                            // 3. ★ 同步更新本地账号列表（GPT 指出的致命漏洞）
-                            acc.token = newToken;
-                            localStorage.setItem('mufy_saved_accounts_v1', JSON.stringify(saved));
-
-                            console.log(`[自愈] 刷新成功，正在自动重载页面...`);
-
-                            // 再刷一次，这次绝对稳
-                            window.location.reload();
-                        }
-                    } catch (e) {
-                        console.warn('[自愈] 自动刷新失败', e);
-                    }
-                }
-            }, 2500);
-        }
-
+    }
+    function mount() {
         if (document.getElementById('mufy-ar-root')) return;
         state.maskLibrary = loadMaskLibrary();
 
         const style = document.createElement('style');
         style.textContent = `
           :root{--bg-main:#050505;--bg-card:#121212;--bg-hover:#1e1e1e;--bg-sub:#0a0a0a;--text-main:#ededed;--text-sub:#888;--text-dark:#555;--border-color:#222;--accent:#fff}
-          #mufy-ar-btn{position:fixed;z-index:2147483647!important;width:52px;height:52px;background:#111;color:#fff;border:1px solid var(--border-color);border-radius:50%;cursor:pointer;font-size:24px;box-shadow:0 10px 30px rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;pointer-events:auto!important;touch-action:none!important;transition:background .2s ease, transform .1s ease;}
-          #mufy-scroll-ctrl { position: fixed; right: 16px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; z-index: 2147483640; opacity: 0.3; transition: opacity 0.2s; }
-          #mufy-scroll-ctrl:hover { opacity: 1; }
-          #mufy-scroll-ctrl button { width: 36px; height: 36px; border-radius: 50%; background: rgba(20, 20, 20, 0.8); color: #fff; border: 1px solid #444; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); transition: all 0.2s; padding: 0; }
-          #mufy-scroll-ctrl button:hover { background: #fff; color: #000; border-color: #fff; transform: scale(1.1); }
-          #mufy-scroll-ctrl svg { display: block; }
+          #mufy-ar-btn{position:fixed;z-index:2147483647!important;width:52px;height:52px;background:#111;color:#fff;border:1px solid var(--border-color);border-radius:50%;cursor:pointer;font-size:24px;box-shadow:0 10px 30px rgba(0,0,0,.8);transition:all .3s ease;display:flex;align-items:center;justify-content:center;pointer-events:auto!important;touch-action:manipulation!important}
           #mufy-ar-btn:active{transform:scale(.95)}
           #mufy-ar-modal{display:none;position:fixed;z-index:2147483646!important;background:rgba(10,10,10,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);color:var(--text-main);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.9)}
           @media (min-width:769px){#mufy-ar-modal{top:50%;left:50%;transform:translate(-50%,-50%);width:680px;max-height:85vh;border-radius:20px;border:1px solid var(--border-color)}#mufy-ar-btn{bottom:40px;right:30px}}
@@ -2986,25 +2052,6 @@ state.accounts = accounts;
           .mufy-action-btn{background:transparent;border:1px solid var(--border-color);color:var(--text-sub);padding:6px 12px;border-radius:20px;font-size:12px;cursor:pointer}
           .mufy-action-btn:active{color:#fff;border-color:#555}
           .mufy-action-btn.primary{background:#fff;color:#000;border:none}
-.mufy-actions{
-  display:flex;
-  justify-content:space-between;
-  align-items:flex-start;
-  gap:10px;
-  padding:0 20px 10px;
-  flex-wrap:wrap;               /* 小屏换行 */
-}
-.mufy-actions > div:last-child{
-  display:flex;
-  gap:6px;
-  flex-wrap:wrap;
-  justify-content:flex-end;
-}
-@media (max-width:480px){
-  #mufy-ar-export, #mufy-ar-import, #mufy-ar-clear{
-    padding:5px 6px; font-size:10px;
-  }
-}
           #mufy-ar-content{flex:1;overflow-y:auto;padding:0 20px 20px}
           #mufy-ar-content::-webkit-scrollbar{width:4px}
           #mufy-ar-content::-webkit-scrollbar-thumb{background:#333;border-radius:4px}
@@ -3085,37 +2132,6 @@ state.accounts = accounts;
           .mufy-mask-tbtn:disabled{opacity:.4;cursor:not-allowed}
           .mufy-mask-input{width:100%;background:#0a0a0a;border:1px solid #333;border-radius:6px;padding:8px;color:#fff;font-size:13px;outline:none;box-sizing:border-box}
           .mufy-mask-input:focus{border-color:#555}
-.mufy-tabs{
-  display:flex;
-  gap:16px;
-  padding:0 20px;
-  border-bottom:1px solid var(--border-color);
-  margin-bottom:10px;
-  overflow-x:auto;              /* 关键：横向滚动 */
-  overflow-y:hidden;
-  flex-wrap:nowrap;             /* 关键：绝不换行 */
-  -webkit-overflow-scrolling:touch;
-  scrollbar-width:none;         /* Firefox 隐藏滚动条 */
-}
-.mufy-tabs::-webkit-scrollbar{ display:none; }  /* Chrome 隐藏滚动条 */
-.mufy-tab{
-  background:transparent;border:none;color:var(--text-sub);
-  font-size:13px;padding:8px 0;cursor:pointer;position:relative;
-  font-weight:500;
-  flex:0 0 auto;                /* 关键：不被压缩 */
-  white-space:nowrap;
-}
-.mufy-tabs-wrap{
-  position:relative;
-}
-.mufy-tabs-wrap::before,
-.mufy-tabs-wrap::after{
-  content:'';
-  position:absolute;top:0;bottom:0;width:24px;
-  pointer-events:none;z-index:2;
-}
-.mufy-tabs-wrap::before{ left:0;  background:linear-gradient(90deg,#050505,transparent); }
-.mufy-tabs-wrap::after { right:0; background:linear-gradient(270deg,#050505,transparent); }
           #mufy-ar-modal.mufy-screenshot-mode .mufy-tools,#mufy-ar-modal.mufy-screenshot-mode .mufy-actions,#mufy-ar-modal.mufy-screenshot-mode .mufy-header-actions{display:none!important}
           #mufy-ar-modal.mufy-screenshot-mode .mufy-header{justify-content:center;text-align:center;padding-bottom:0}
           #mufy-ar-modal.mufy-screenshot-mode .mufy-tabs{justify-content:center;border-bottom:none;margin-bottom:15px;pointer-events:none}
@@ -3126,39 +2142,19 @@ state.accounts = accounts;
         `;
         document.documentElement.appendChild(style);
 
-        // 1. 创建回顶回底按钮
-        const scrollCtrl = document.createElement('div');
-        scrollCtrl.id = 'mufy-scroll-ctrl';
-        scrollCtrl.innerHTML = `
-            <button id="mufy-scroll-top" title="回到顶部">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-            </button>
-            <button id="mufy-scroll-bottom" title="回到底部">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
-            </button>
-        `;
-        document.body.appendChild(scrollCtrl);
-
-        // 2. 创建悬浮球（星星）
         const btn = document.createElement('button');
-        btn.id = 'mufy-ar-btn';
-        btn.innerHTML = '✦';
-        document.body.appendChild(btn);
+        btn.id = 'mufy-ar-btn'; btn.innerHTML = '✦'; document.body.appendChild(btn);
 
-        // 3. 创建面板
         const modal = document.createElement('div');
         modal.id = 'mufy-ar-modal';
-             modal.innerHTML = `
+        modal.innerHTML = `
           <button id="mufy-exit-screenshot" title="退出截图模式">✕</button>
           <div class="mufy-header">
             <div class="mufy-header-text">
-              <h2>Mufy Recap</h2>
-              <p>马粪你毁了我一辈子啊</p>
+              <h2>Mufy 报告</h2>
+              <p>统计与自动化</p>
             </div>
-                       <div class="mufy-header-actions" style="display:flex;gap:12px;align-items:center;">
-              <button id="mufy-toggle-scroll-btn" title="显示/隐藏快捷回顶回底">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16V4m0 0L3 8m4-4l4 4m6 4v12m0 0l4-4m-4 4l-4-4"/></svg>
-              </button>
+            <div class="mufy-header-actions" style="display:flex;gap:12px;align-items:center;">
               <button id="mufy-screenshot-btn" title="纯净截图模式">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
               </button>
@@ -3172,30 +2168,23 @@ state.accounts = accounts;
             </div>
             <div id="mufy-ar-single-result" style="display:none;padding:12px;background:var(--bg-card);border-radius:8px;font-size:13px;border:1px solid var(--border-color);"></div>
           </div>
-<div class="mufy-tabs-wrap">
           <div class="mufy-tabs">
-            <button id="tab-role" class="mufy-tab active">角色</button>
-            <button id="tab-author" class="mufy-tab">作者</button>
-            <button id="tab-collection" class="mufy-tab">收藏</button>
-            <button id="tab-masklib" class="mufy-tab">面具</button>
-            <button id="tab-harvest" class="mufy-tab">主页</button>
-<button id="tab-accounts" class="mufy-tab">账号</button>
-<button id="tab-memo" class="mufy-tab">备忘</button>
-<button id="tab-archive" class="mufy-tab">存档</button>
+            <button id="tab-role" class="mufy-tab active">角色数据</button>
+            <button id="tab-author" class="mufy-tab">作者数据</button>
+            <button id="tab-collection" class="mufy-tab">收藏管理</button>
+            <button id="tab-masklib" class="mufy-tab">面具库</button>
+            <button id="tab-harvest" class="mufy-tab">主页收割</button>
+<button id="tab-accounts" class="mufy-tab">账号管理</button>
           </div>
-</div>
-                   <div class="mufy-actions">
+          <div class="mufy-actions">
              <div id="mufy-ar-status" class="mufy-status success">准备ok</div>
-             <div style="display:flex;gap:8px; align-items:center;">
-                <button id="mufy-ar-export" class="mufy-action-btn" style="padding:6px 8px; font-size:11px;">备份</button>
-                <button id="mufy-ar-import" class="mufy-action-btn" style="padding:6px 8px; font-size:11px;">恢复</button>
-                <button id="mufy-ar-clear" class="mufy-action-btn" style="padding:6px 8px; font-size:11px;">清缓存</button>
+             <div style="display:flex;gap:8px;">
+                <button id="mufy-ar-clear" class="mufy-action-btn">清缓存</button>
                 <button id="mufy-ar-scan" class="mufy-action-btn primary">扫描</button>
              </div>
           </div>
-          <input type="file" id="mufy-ar-import-file" accept=".json" style="display:none;">
           <div class="mufy-tools" style="padding-bottom:10px;">
-             <input type="text" id="mufy-ar-search" class="mufy-input" style="background:var(--bg-card);border:1px solid var(--border-color);border-radius:8px;padding:8px 12px;" placeholder="在这里搜你想搜的东西吧...">
+             <input type="text" id="mufy-ar-search" class="mufy-input" style="background:var(--bg-card);border:1px solid var(--border-color);border-radius:8px;padding:8px 12px;" placeholder="在榜单中搜索角色或作者...">
              <div id="mufy-ar-manual-wrap" style="display:none;margin-top:8px;font-size:12px;color:#fff;">
                 <span style="color:#888;">手动填 ID:</span>
                 <input type="text" id="mufy-ar-id-input" class="mufy-input" style="border:1px solid #333;border-radius:4px;padding:6px;width:160px;">
@@ -3225,150 +2214,6 @@ state.accounts = accounts;
         const screenshotBtn = modal.querySelector('#mufy-screenshot-btn');
         const exitScreenshotBtn = modal.querySelector('#mufy-exit-screenshot');
 const tabAccounts = modal.querySelector('#tab-accounts');
-const tabMemo = modal.querySelector('#tab-memo');
-const tabArchive = modal.querySelector('#tab-archive'); // 👈 加上这行
-
-        // ================= 回顶回底开关逻辑 =================
-        const toggleScrollBtn = modal.querySelector('#mufy-toggle-scroll-btn');
-        const scrollCtrlEl = document.getElementById('mufy-scroll-ctrl');
-
-        // 读取记住的状态
-        const isScrollHidden = localStorage.getItem('mufy_scroll_hidden') === 'true';
-
-        // 初始化状态
-        if (isScrollHidden) {
-            scrollCtrlEl.style.display = 'none';
-            toggleScrollBtn.style.color = '#444'; // 隐藏时颜色变暗
-        } else {
-            toggleScrollBtn.style.color = 'var(--text-sub)'; // 正常颜色
-        }
-
-        // 点击切换
-        toggleScrollBtn.addEventListener('click', () => {
-            const currentlyHidden = scrollCtrlEl.style.display === 'none';
-            if (currentlyHidden) {
-                scrollCtrlEl.style.display = 'flex';
-                toggleScrollBtn.style.color = 'var(--text-sub)';
-                localStorage.setItem('mufy_scroll_hidden', 'false');
-            } else {
-                scrollCtrlEl.style.display = 'none';
-                toggleScrollBtn.style.color = '#444';
-                localStorage.setItem('mufy_scroll_hidden', 'true');
-            }
-        });
-               // ================= 拖拽面板逻辑（鼠标分离无敌版） =================
-        let isDragging = false;
-        let startX, startY, initialLeft, initialTop;
-        const headerEl = modal.querySelector('.mufy-header');
-
-        // 防止选中文字，提升拖拽手感
-        headerEl.style.cursor = 'move';
-        headerEl.style.userSelect = 'none';
-
-        headerEl.onmousedown = function(e) {
-            // 如果点的是按钮（关闭、截图等），不触发拖拽
-            if (e.target.closest('button')) return;
-
-            e.preventDefault(); // ★ 阻止默认的文本选中和原生拖拽行为
-            isDragging = true;
-
-            const rect = modal.getBoundingClientRect();
-            initialLeft = rect.left;
-            initialTop = rect.top;
-            startX = e.clientX;
-            startY = e.clientY;
-
-            // 干掉居中用的 transform，改成绝对定位
-            modal.style.transform = 'none';
-            modal.style.left = `${initialLeft}px`;
-            modal.style.top = `${initialTop}px`;
-            modal.style.margin = '0';
-
-            // 视觉反馈：加深阴影
-            modal.style.boxShadow = '0 30px 80px rgba(0,0,0,1)';
-        };
-
-        // 监听整个文档的鼠标移动
-        document.addEventListener('mousemove', function(e) {
-            if (!isDragging) return;
-
-            // 计算移动距离
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
-
-            let newLeft = initialLeft + dx;
-            let newTop = initialTop + dy;
-
-            // 防止拖出屏幕外（留出部分面板在视野内）
-            const w = window.innerWidth;
-            const h = window.innerHeight;
-
-            if (newLeft < -modal.offsetWidth + 100) newLeft = -modal.offsetWidth + 100;
-            if (newLeft > w - 100) newLeft = w - 100;
-            if (newTop < 0) newTop = 0;
-            if (newTop > h - 50) newTop = h - 50;
-
-            modal.style.left = `${newLeft}px`;
-            modal.style.top = `${newTop}px`;
-
-            e.preventDefault(); // ★ 持续阻止默认拖拽
-        });
-
-        // 松开鼠标结束拖拽
-        document.addEventListener('mouseup', function() {
-            if (isDragging) {
-                isDragging = false;
-                modal.style.boxShadow = '0 20px 60px rgba(0,0,0,.9)';
-            }
-        });
-
-        // ================= 备份/恢复逻辑 =================
-        const exportBtn = modal.querySelector('#mufy-ar-export');
-        const importBtn = modal.querySelector('#mufy-ar-import');
-        const importFile = modal.querySelector('#mufy-ar-import-file');
-
-        exportBtn.addEventListener('click', () => {
-           const keysToExport = [CACHE_DATA_KEY, MASK_LIBRARY_KEY, ACCOUNTS_KEY, TAG_RULES_KEY];
-            const data = {};
-            keysToExport.forEach(k => {
-                const val = localStorage.getItem(k);
-                if (val) data[k] = val;
-            });
-
-            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `mufy_backup_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-            setStatus('数据已导出下载');
-        });
-
-        importBtn.addEventListener('click', () => importFile.click());
-        importFile.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                try {
-                    const data = JSON.parse(event.target.result);
-                    let count = 0;
-                    Object.keys(data).forEach(k => {
-                        if (typeof data[k] === 'string') {
-                            localStorage.setItem(k, data[k]);
-                            count++;
-                        }
-                    });
-                    alert(' 数据恢复成功！即将刷新页面应用新数据。');
-                    window.location.reload();
-                } catch (err) {
-                    alert(' 恢复失败，文件格式不正确');
-                }
-            };
-            reader.readAsText(file);
-            importFile.value = '';
-        });
 
         const setStatus = (text, isError = false) => {
             statusEl.textContent = text;
@@ -3376,15 +2221,14 @@ const tabArchive = modal.querySelector('#tab-archive'); // 👈 加上这行
             else statusEl.classList.add('success');
         };
 
-                       function renderActiveTab() {
+               function renderActiveTab() {
             if (state.activeTab === 'collection') renderCollection(contentEl);
             else if (state.activeTab === 'masklib') renderMaskLibrary(contentEl);
             else if (state.activeTab === 'harvest') renderHarvestTab(contentEl);
             else if (state.activeTab === 'accounts') renderAccountsTab(contentEl, setStatus);
-           else if (state.activeTab === 'memo') renderMemoTab(contentEl);
-else if (state.activeTab === 'archive') renderArchiveTab(contentEl); // 👈 加上这行
             else renderContent(contentEl);
         }
+
         function openModal() {
             modal.style.setProperty('display', 'flex', 'important');
             modal.style.setProperty('visibility', 'visible', 'important');
@@ -3405,192 +2249,33 @@ else if (state.activeTab === 'archive') renderArchiveTab(contentEl); // 👈 加
             modal.style.setProperty('pointer-events', 'none', 'important');
             modal.classList.remove('mufy-screenshot-mode');
         }
-        // ================= 悬浮球拖拽与点击分离逻辑 =================
-        // 1. 读取上次保存的位置
-        try {
-            const savedPos = JSON.parse(localStorage.getItem('mufy_btn_pos') || 'null');
-            if (savedPos && typeof savedPos.left === 'number') {
-                btn.style.left = `${savedPos.left}px`;
-                btn.style.top = `${savedPos.top}px`;
-                btn.style.right = 'auto';
-                btn.style.bottom = 'auto';
-            }
-        } catch (e) {}
-
-        let btnDragStartX, btnDragStartY, btnStartLeft, btnStartTop;
-        let btnIsDragging = false;
-        let btnMoved = false;
-
-        // 2. 按下鼠标
-        btn.addEventListener('pointerdown', (e) => {
-            if (e.button !== 0) return; // 仅限左键
-
-            e.preventDefault(); // 防止触发原生拖拽
-            btnIsDragging = true;
-            btnMoved = false;
-            btnDragStartX = e.clientX;
-            btnDragStartY = e.clientY;
-
-            const rect = btn.getBoundingClientRect();
-            btnStartLeft = rect.left;
-            btnStartTop = rect.top;
-
-            btn.setPointerCapture(e.pointerId); // 锁定指针
-        });
-
-        // 3. 移动鼠标
-        btn.addEventListener('pointermove', (e) => {
-            if (!btnIsDragging) return;
-
-            const dx = e.clientX - btnDragStartX;
-            const dy = e.clientY - btnDragStartY;
-
-            // 只要移动超过 3px，就判定为“拖拽”而不是“点击”
-            if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-                btnMoved = true;
-                btn.style.right = 'auto';
-                btn.style.bottom = 'auto';
-
-                // 防止拖出屏幕外（留出 10px 边距）
-                let newLeft = btnStartLeft + dx;
-                let newTop = btnStartTop + dy;
-                const maxLeft = window.innerWidth - btn.offsetWidth - 10;
-                const maxTop = window.innerHeight - btn.offsetHeight - 10;
-
-                newLeft = Math.max(10, Math.min(newLeft, maxLeft));
-                newTop = Math.max(10, Math.min(newTop, maxTop));
-
-                btn.style.left = `${newLeft}px`;
-                btn.style.top = `${newTop}px`;
-            }
-        });
-
-        // 4. 松开鼠标
-        btn.addEventListener('pointerup', (e) => {
-            if (!btnIsDragging) return;
-            btnIsDragging = false;
-            btn.releasePointerCapture(e.pointerId);
-
-            if (btnMoved) {
-                // 如果发生拖拽，保存最后的位置，且不打开面板
-                const rect = btn.getBoundingClientRect();
-                localStorage.setItem('mufy_btn_pos', JSON.stringify({ left: rect.left, top: rect.top }));
-            } else {
-                // 如果没移动，说明是“纯点击”，打开面板
-                openModal();
-            }
-        });
-
-        // 5. 处理拖拽取消的情况（比如鼠标划出了浏览器）
-        btn.addEventListener('pointercancel', (e) => {
-            if (!btnIsDragging) return;
-            btnIsDragging = false;
-            btn.releasePointerCapture(e.pointerId);
-        });
+        btn.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); openModal(); }, true);
         modal.querySelector('#mufy-ar-close').addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); closeModal(); }, true);
         screenshotBtn.addEventListener('click', () => modal.classList.add('mufy-screenshot-mode'));
         exitScreenshotBtn.addEventListener('click', () => modal.classList.remove('mufy-screenshot-mode'));
 
-        // ================= 回顶回底点击事件 =================
-        // 查找当前页面真正的滚动容器（有些网页滚动的是 body，有些是内部某个 div）
-        function getScrollTargets() {
-            const targets = [window, document.documentElement, document.body];
-            // 兜底：找出页面上所有可滚动的 div 容器
-            const allDivs = document.querySelectorAll('div, main, section');
-            for (let i = 0; i < allDivs.length; i++) {
-                const div = allDivs[i];
-                if (div.scrollHeight > div.clientHeight && div.clientHeight > window.innerHeight * 0.5) {
-                    targets.push(div);
-                }
-            }
-            return targets;
+              function switchTab(tab) {
+            state.activeTab = tab;
+            tabRole.className = `mufy-tab ${tab === 'role' ? 'active' : ''}`;
+            tabAuthor.className = `mufy-tab ${tab === 'author' ? 'active' : ''}`;
+            tabCollection.className = `mufy-tab ${tab === 'collection' ? 'active' : ''}`;
+            tabMaskLib.className = `mufy-tab ${tab === 'masklib' ? 'active' : ''}`;
+            tabHarvest.className = `mufy-tab ${tab === 'harvest' ? 'active' : ''}`;
+            tabAccounts.className = `mufy-tab ${tab === 'accounts' ? 'active' : ''}`; // 👈 新增这一行
+            renderActiveTab();
         }
-
-        const scrollTopBtn = document.getElementById('mufy-scroll-top');
-        const scrollBottomBtn = document.getElementById('mufy-scroll-bottom');
-
-        scrollTopBtn.addEventListener('click', () => {
-            getScrollTargets().forEach(el => {
-                try { el.scrollTo({ top: 0, behavior: 'smooth' }); } catch(e) {}
-            });
-        });
-
-               scrollBottomBtn.addEventListener('click', () => {
-            getScrollTargets().forEach(el => {
-                try {
-                    const maxScroll = el.scrollHeight || 9999999;
-                    el.scrollTo({ top: maxScroll, behavior: 'smooth' });
-                } catch(e) {}
-            });
-        });
-
-        function switchTab(tab) {
-    state.activeTab = tab;
-    tabRole.className = `mufy-tab ${tab === 'role' ? 'active' : ''}`;
-    tabAuthor.className = `mufy-tab ${tab === 'author' ? 'active' : ''}`;
-    tabCollection.className = `mufy-tab ${tab === 'collection' ? 'active' : ''}`;
-    tabMaskLib.className = `mufy-tab ${tab === 'masklib' ? 'active' : ''}`;
-    tabHarvest.className = `mufy-tab ${tab === 'harvest' ? 'active' : ''}`;
-    tabAccounts.className = `mufy-tab ${tab === 'accounts' ? 'active' : ''}`;
-    tabMemo.className = `mufy-tab ${tab === 'memo' ? 'active' : ''}`;
-    tabArchive.className = `mufy-tab ${tab === 'archive' ? 'active' : ''}`;
-
-    // ★ 新增：把当前激活的 Tab 滚进视野
-    const activeBtn = modal.querySelector(`.mufy-tab.active`);
-    if (activeBtn) {
-        activeBtn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-    }
-
-    renderActiveTab();
-}
-
         tabRole.addEventListener('click', () => switchTab('role'));
         tabAuthor.addEventListener('click', () => switchTab('author'));
         tabCollection.addEventListener('click', () => switchTab('collection'));
         tabMaskLib.addEventListener('click', () => switchTab('masklib'));
-        tabHarvest.addEventListener('click', () => switchTab('harvest'));
+              tabHarvest.addEventListener('click', () => switchTab('harvest'));
         tabAccounts.addEventListener('click', () => switchTab('accounts'));
-        tabMemo.addEventListener('click', () => switchTab('memo'));
-tabArchive.addEventListener('click', () => switchTab('archive')); //  加上这行
+        searchInput.addEventListener('input', e => {
+            state.searchQuery = e.target.value.trim();
+            if (!state.isScanning && state.activeTab !== 'collection' && state.activeTab !== 'masklib' && state.activeTab !== 'harvest') renderContent(contentEl);
+        });
 
-
-searchInput.addEventListener('input', e => {
-    state.searchQuery = e.target.value.trim();
-    state.searchParsed = parseSearchToken(state.searchQuery);
-    if (state.isScanning) return;
-    if (['role', 'author'].includes(state.activeTab)) {
-        renderContent(contentEl);
-    } else if (state.activeTab === 'collection') {
-        renderCollection(contentEl);
-    } else if (state.activeTab === 'masklib') {
-        renderMaskLibrary(contentEl);
-    }
-});
         contentEl.addEventListener('click', async (e) => {
-const modeBtn = e.target.closest('[data-mode]');
-if (modeBtn) {
-    e.preventDefault();
-    state.collectionMode = modeBtn.getAttribute('data-mode');
-    renderCollection(contentEl);
-    return;
-}
-if (e.target.id === 'mufy-organize-tag') {
-    e.preventDefault();
-    const raw = contentEl.querySelector('#mufy-tag-rules')?.value || '';
-    localStorage.setItem(TAG_RULES_KEY, raw);
-    if (!state.roles.length) { setStatus('请先扫描', true); return; }
-    if (!parseTagRules(raw).length) { setStatus('请填写至少一条有效规则（夹名 = 标签1, 标签2）', true); return; }
-    if (!confirm('按标签整理会创建/复用标签夹。\n\n⚠️ 已在作者夹里的角色可能加不进新夹（接口限制），旧夹不会自动清空。\n建议先点「清空旧夹」。继续？')) return;
-    e.target.disabled = true;
-    try { await organizeByTag(setStatus); renderCollection(contentEl); }
-    finally { e.target.disabled = false; }
-    return;
-}
-if (e.target.id === 'mufy-clear-folders') {
-    e.preventDefault();
-    showClearFoldersDialog(() => renderCollection(contentEl));
-    return;
-}
             if (e.target.id === 'mufy-organize-followed') {
                 e.preventDefault();
                 if (!state.roles.length) { setStatus('请先扫描', true); return; }
@@ -3615,53 +2300,6 @@ if (e.target.id === 'mufy-clear-folders') {
                 return;
             }
             if (e.target.id === 'mufy-view-folders') { e.preventDefault(); showFoldersDialog(); return; }
-            if (e.target.id === 'mufy-clean-dead') {
-                e.preventDefault();
-                if (!state.roles.length) { setStatus('请先扫描', true); return; }
-
-                // 筛选出所有“未遂（你两见过但没法聊了）”和“作者未知失效”的卡
-                const deadRoles = state.roles.filter(r =>
-                    (r.isExpired && r.rounds === 0) ||
-                    (r.authorId === 'unknown')
-                );
-
-                if (deadRoles.length === 0) {
-                    alert('太棒了，当前数据中没有需要清理的失效死卡！');
-                    return;
-                }
-
-                if (!confirm(`检测到 ${deadRoles.length} 张死卡（包括已失效、作者未知），是否一键取消收藏并从本地列表移除？\n\n注意：这不会删除角色本身，只是帮你清理收藏夹和本地数据。`)) return;
-
-                e.target.disabled = true;
-                e.target.textContent = `清理中 0/${deadRoles.length}`;
-                let success = 0;
-
-                for (let i = 0; i < deadRoles.length; i++) {
-                    const r = deadRoles[i];
-                    e.target.textContent = `清理中 ${i+1}/${deadRoles.length}`;
-                    // 只有在收藏状态时才调接口
-                    if (r.isFollowed) {
-                        const res = await followCharacter(r.characterId, false);
-                        if (res.ok) {
-                            r.isFollowed = false;
-                            success++;
-                        }
-                    } else {
-                        success++; // 本来就没收藏，直接算清理成功
-                    }
-                    await sleep(400);
-                }
-
-                // 从 state.roles 里物理移除这些卡
-                state.roles = state.roles.filter(r => !deadRoles.includes(r));
-                saveCache();
-                addCollectionLog(`清理了 ${deadRoles.length} 张死卡`);
-
-                alert(` 清理完成！成功处理了 ${success} 张卡。`);
-                renderCollection(contentEl);
-                return;
-            }
-
             const filterBtn = e.target.closest('.mufy-filter-btn');
             if (filterBtn) { e.preventDefault(); state.collectionFilter = filterBtn.getAttribute('data-filter'); renderCollection(contentEl); return; }
             const maskBtn = e.target.closest('.mufy-mask-btn');
